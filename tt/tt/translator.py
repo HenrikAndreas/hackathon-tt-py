@@ -545,7 +545,7 @@ def _adapt_interface_returns(code: str) -> str:
     Fixes method signatures and return formats to match what the
     Python wrapper expects. Generic transformations based on patterns.
     """
-    # Fix get_investments signature: add group_by param
+    # Fix get_investments: add group_by param, grouping, and wrapper format
     code = re.sub(
         r'def get_investments\(self\):',
         'def get_investments(self, group_by=None):',
@@ -565,14 +565,20 @@ def _adapt_interface_returns(code: str) -> str:
         if in_method == 'get_investments' and s.startswith('return '):
             indent = len(line) - len(s)
             val = s[len('return '):]
+            sp = ' ' * indent
             if val == '[]':
-                line = f"{' ' * indent}return {{'investments': []}}"
+                line = f"{sp}return {{'investments': []}}"
             elif val.startswith('[') or val.startswith('functools'):
                 line = (
-                    f"{' ' * indent}_r = {val}\n"
-                    f"{' ' * indent}return {{'investments': "
-                    f"[{{'date': ga(i,'date'), 'investment': "
-                    f"float(ga(i,'investment',0))}} for i in _r]}}"
+                    f"{sp}_r = [{{'date':ga(i,'date'),'investment':"
+                    f"float(ga(i,'investment',0))}} for i in {val}]\n"
+                    f"{sp}if group_by:\n"
+                    f"{sp}    g = {{}}\n"
+                    f"{sp}    for it in _r:\n"
+                    f"{sp}        k = it['date'][:7] if group_by=='month' else it['date'][:4]\n"
+                    f"{sp}        g[k] = g.get(k, 0) + it['investment']\n"
+                    f"{sp}    return {{'investments': [{{'date': (k+'-01') if group_by=='month' else (k+'-01-01'), 'investment': v}} for k, v in sorted(g.items())]}}\n"
+                    f"{sp}return {{'investments': _r}}"
                 )
 
         result.append(line)

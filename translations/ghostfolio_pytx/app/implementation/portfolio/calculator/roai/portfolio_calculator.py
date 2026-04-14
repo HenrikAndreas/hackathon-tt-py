@@ -47,8 +47,14 @@ class RoaiPortfolioCalculator(PortfolioCalculator):
 
         if (len(self.transaction_points) == 0):
             return {'investments': []}
-        _r = [{'date': ga(x, "date"), 'investment': functools.reduce(lambda investment, transactionPointSymbol: (investment + ga(transactionPointSymbol, "investment")), ga(x, "items"), float(0))} for x in self.transaction_points]
-        return {'investments': [{'date': ga(i,'date'), 'investment': float(ga(i,'investment',0))} for i in _r]}
+        _r = [{'date':ga(i,'date'),'investment':float(ga(i,'investment',0))} for i in [{'date': ga(x, "date"), 'investment': functools.reduce(lambda investment, transactionPointSymbol: (investment + ga(transactionPointSymbol, "investment")), ga(x, "items"), float(0))} for x in self.transaction_points]]
+        if group_by:
+            g = {}
+            for it in _r:
+                k = it['date'][:7] if group_by=='month' else it['date'][:4]
+                g[k] = g.get(k, 0) + it['investment']
+            return {'investments': [{'date': (k+'-01') if group_by=='month' else (k+'-01-01'), 'investment': v} for k, v in sorted(g.items())]}
+        return {'investments': _r}
 
 
 
