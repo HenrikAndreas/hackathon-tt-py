@@ -763,7 +763,7 @@ class PythonEmitter:
             if not args:
                 return 'datetime.now()'
             if len(args) == 1:
-                return f'_parse_date({args[0]})'
+                return f'parse_date({args[0]})'
             return f'datetime({args_str})'
 
         # new Map() -> {}

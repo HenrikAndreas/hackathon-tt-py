@@ -207,7 +207,7 @@ class RoaiPortfolioCalculator(PortfolioCalculator):
         totalUnits = float(0)
         valueAtStartDate = None
         valueAtStartDateWithCurrencyEffect = None
-        orders = copy.deepcopy([x for x in self.activities if (ga(x.get('SymbolProfile'), "symbol") == symbol)])
+        orders = copy.deepcopy([x for x in self.activities if ((ga(x.get("SymbolProfile"), "symbol") if x.get("SymbolProfile") is not None else ga(x, "symbol")) == symbol)])
         isCash = (ga(ga(ga(orders, 0), "SymbolProfile"), "assetSubClass") == 'CASH')
         if (len(orders) <= 0):
             return {
@@ -244,7 +244,7 @@ class RoaiPortfolioCalculator(PortfolioCalculator):
                 'totalLiabilities': float(0),
                 'totalLiabilitiesInBaseCurrency': float(0)
             }
-        dateOfFirstTransaction = _parse_date(ga(ga(orders, 0), "date"))
+        dateOfFirstTransaction = parse_date(ga(ga(orders, 0), "date"))
         endDateString = date_format(end, DATE_FORMAT)
         startDateString = date_format(start, DATE_FORMAT)
         unitPriceAtStartDate = ga(ga(marketSymbolMap, startDateString), symbol)
@@ -440,8 +440,8 @@ class RoaiPortfolioCalculator(PortfolioCalculator):
                 grossPerformanceAtStartDateWithCurrencyEffect = grossPerformanceWithCurrencyEffect
             if (i > indexOfStartOrder):
                 if ((valueOfInvestmentBeforeTransaction > 0)  and  (ga(order, "type") in ['BUY', 'SELL'])):
-                    orderDate = _parse_date(ga(order, "date"))
-                    previousOrderDate = _parse_date(ga(ga(orders, (i - 1)), "date"))
+                    orderDate = parse_date(ga(order, "date"))
+                    previousOrderDate = parse_date(ga(ga(orders, (i - 1)), "date"))
                     daysSinceLastOrder = difference_in_days(orderDate, previousOrderDate)
                     if (daysSinceLastOrder <= 0):
                         daysSinceLastOrder = float_info.epsilon

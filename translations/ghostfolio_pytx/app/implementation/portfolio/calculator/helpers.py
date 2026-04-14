@@ -207,8 +207,8 @@ def get_interval_from_date_range(aDateRange, portfolioStart=None):
     elif aDateRange == 'max':
         pass
     else:
-        endDate = end_of_year(_parse_date(aDateRange))
-        startDate = max([startDate, _parse_date(aDateRange)])
+        endDate = end_of_year(parse_date(aDateRange))
+        startDate = max([startDate, parse_date(aDateRange)])
     return {'endDate': endDate, 'startDate': startDate}
 
 
@@ -336,7 +336,7 @@ def get_number_format_group(aLocale=None):
     return ga(next((x for x in formatObject if (x.get('type') == 'group')), None), "value")
 
 def get_start_of_utc_date(aDate):
-    date = _parse_date(aDate)
+    date = parse_date(aDate)
     date.set_utc_hours(0, 0, 0, 0)
     return date
 
@@ -354,17 +354,17 @@ def get_today():
     year = get_year(datetime.now())
     month = get_month(datetime.now())
     day = get_date(datetime.now())
-    return _parse_date(datetime.utc(year, month, day))
+    return parse_date(datetime.utc(year, month, day))
 
 def get_utc(aDateString):
     yearString, monthString, dayString = aDateString.split('-')
-    return _parse_date(datetime.utc(parse_int(yearString, 10), (parse_int(monthString, 10) - 1), parse_int(dayString, 10)))
+    return parse_date(datetime.utc(parse_int(yearString, 10), (parse_int(monthString, 10) - 1), parse_int(dayString, 10)))
 
 def get_yesterday():
     year = get_year(datetime.now())
     month = get_month(datetime.now())
     day = get_date(datetime.now())
-    return sub_days(_parse_date(datetime.utc(year, month, day)), 1)
+    return sub_days(parse_date(datetime.utc(year, month, day)), 1)
 
 def group_by(key, arr):
     map = {}

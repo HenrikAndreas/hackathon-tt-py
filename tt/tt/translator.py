@@ -180,6 +180,18 @@ def _post_process(code: str) -> str:
     code = re.sub(r'Decimal\(str\(([^)]*)\)\)', r'float(\1)', code)
     code = re.sub(r'D\((\d+)\)', r'float(\1)', code)
 
+    # Fix chained access for flat data:
+    # ga(ga(x, 'Nested'), 'prop') → try nested first, fallback flat
+    # ga(x.get('Nested'), 'prop') → same pattern
+    code = re.sub(
+        r'ga\(ga\((\w+), ["\'](\w+)["\']\), ["\'](\w+)["\']\)',
+        r'(ga(ga(\1, "\2"), "\3") if ga(\1, "\2") is not None else ga(\1, "\3"))',
+        code)
+    code = re.sub(
+        r'ga\((\w+)\.get\(["\'](\w+)["\']\), ["\'](\w+)["\']\)',
+        r'(ga(\1.get("\2"), "\3") if \1.get("\2") is not None else ga(\1, "\3"))',
+        code)
+
     # Inline TS constants that were imported but not translated
     # Extract values from source files generically
     code = _inline_constants(code)
