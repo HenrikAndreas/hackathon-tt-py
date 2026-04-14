@@ -39,33 +39,33 @@ UPDATE_OPS = {
 
 # date-fns function -> Python equivalent
 DATE_FNS = {
-    'format': '_date_format',
-    'isBefore': '_is_before',
-    'isAfter': '_is_after',
-    'differenceInDays': '_difference_in_days',
-    'addMilliseconds': '_add_milliseconds',
-    'subDays': '_sub_days',
-    'eachDayOfInterval': '_each_day_of_interval',
-    'eachYearOfInterval': '_each_year_of_interval',
-    'startOfDay': '_start_of_day',
-    'endOfDay': '_end_of_day',
-    'startOfYear': '_start_of_year',
-    'endOfYear': '_end_of_year',
-    'isWithinInterval': '_is_within_interval',
-    'min': '_date_min',
-    'parseISO': '_parse_iso',
-    'isThisYear': '_is_this_year',
-    'isNumber': '_is_number',
+    'format': 'date_format',
+    'isBefore': 'is_before',
+    'isAfter': 'is_after',
+    'differenceInDays': 'difference_in_days',
+    'addMilliseconds': 'add_milliseconds',
+    'subDays': 'sub_days',
+    'eachDayOfInterval': 'each_day_of_interval',
+    'eachYearOfInterval': 'each_year_of_interval',
+    'startOfDay': 'start_of_day',
+    'endOfDay': 'end_of_day',
+    'startOfYear': 'start_of_year',
+    'endOfYear': 'end_of_year',
+    'isWithinInterval': 'is_within_interval',
+    'min': 'date_min',
+    'parseISO': 'parse_iso',
+    'isThisYear': 'is_this_year',
+    'isNumber': 'is_number',
 }
 
 # lodash function -> Python equivalent
 LODASH = {
     'cloneDeep': 'copy.deepcopy',
-    'sortBy': '_sort_by',
-    'isNumber': '_is_number',
+    'sortBy': 'sort_by',
+    'isNumber': 'is_number',
     'sum': 'sum',
-    'uniqBy': '_uniq_by',
-    'get': '_lodash_get',
+    'uniqBy': 'uniq_by',
+    'get': 'lodash_get',
 }
 
 # JS builtin -> Python
@@ -331,14 +331,13 @@ class PythonEmitter:
 
                 self._write(f'for _item in {right}:')
                 self._indent += 1
+                # Set context for ga() fallback on flat data
+                self._write('gactx.item = _item')
                 for p in props:
                     if p[0] == 'rest':
                         continue
                     key, val = p[1], p[2]
-                    self._write(
-                        f"{val} = _item.get('{key}') "
-                        f"if isinstance(_item, dict) else "
-                        f"getattr(_item, '{key}', None)")
+                    self._write(f"{val} = ga(_item, '{key}')")
                 self._emit_block(node.body)
                 self._indent -= 1
                 return
@@ -498,7 +497,12 @@ class PythonEmitter:
         prop = node.property
 
         if node.computed:
-            return f'{obj}[{self._expr(prop)}]'
+            key_expr = self._expr(prop)
+            # Use .get() for local dicts to avoid KeyError (JS returns undefined)
+            _known = {'self', 'math', 'Math', 'datetime', 'date'}
+            if obj not in _known and not obj.startswith('self.'):
+                return f'ga({obj}, {key_expr})'
+            return f'{obj}[{key_expr}]'
 
         prop_name = _name(prop)
 
@@ -515,17 +519,15 @@ class PythonEmitter:
         if prop_name == 'length':
             return f'len({obj})'
 
-        # For local variables that might be dicts (not self, not
-        # module-level), use safe access pattern
-        if (obj not in ('self', 'math', 'Math', 'dict', 'list',
-                         'set', 'json', 'copy', 'functools',
-                         'datetime', 'date', 'Decimal')
-                and not obj.startswith('self.')
-                and not obj[0].isupper()):
-            # Could be a dict — use _ga (get-attribute) helper
-            return f'_ga({obj}, "{prop_name}")'
+        # Known modules/builtins — use dot access
+        _known = {'self', 'math', 'Math', 'dict', 'list', 'set',
+                  'json', 'copy', 'functools', 'datetime', 'date',
+                  'Decimal', 'time', 'Number', 'Promise'}
+        if obj in _known or obj.startswith('self.'):
+            return f'{obj}.{prop_name}'
 
-        return f'{obj}.{prop_name}'
+        # Everything else: safe access via ga() (dicts + objects)
+        return f'ga({obj}, "{prop_name}")'
 
     def _emit_CallExpression(self, node):
         callee = node.callee
@@ -588,7 +590,8 @@ class PythonEmitter:
         if func_str == 'Promise.all':
             return f'await asyncio.gather({args_str})'
 
-        return f'{func_str}({args_str})'
+        # Convert camelCase function names to snake_case
+        return f'{_to_snake(func_str)}({args_str})'
 
     def _emit_big_method_call(self, obj, method, args, args_str):
         """Handle Big.js method calls. Returns None if not applicable."""

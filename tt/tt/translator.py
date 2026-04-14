@@ -83,12 +83,31 @@ def translate_helpers(repo_root: Path) -> str:
         repo_root / 'projects/ghostfolio/libs/common/src/lib/helper.ts',
     ]
 
-    # Generic accessor for dict/object properties
+    # Generic accessor — works with dicts, objects, and None
+    # Also handles nested-to-flat fallback via _item thread local
     chunks = [
-        'def _ga(obj, key, default=None):\n'
+        'import threading\n'
+        'gactx = threading.local()\n\n'
+        'def ga(obj, key, default=None):\n'
+        '    """Safe attribute/key access for dicts, lists, objects.\n'
+        '    Falls back to loop context item for flat data."""\n'
+        '    if obj is None:\n'
+        '        ctx = getattr(gactx, "item", None)\n'
+        '        if ctx is not None:\n'
+        '            if isinstance(ctx, dict):\n'
+        '                return ctx.get(key, default)\n'
+        '            return getattr(ctx, key, default)\n'
+        '        return default\n'
         '    if isinstance(obj, dict):\n'
         '        return obj.get(key, default)\n'
-        '    return getattr(obj, key, default)\n',
+        '    if isinstance(obj, (list, tuple)):\n'
+        '        try:\n'
+        '            return obj[key]\n'
+        '        except (IndexError, TypeError):\n'
+        '            return default\n'
+        '    if isinstance(key, str):\n'
+        '        return getattr(obj, key, default)\n'
+        '    return default\n',
     ]
     for path in helper_files:
         if not path.exists():
@@ -145,6 +164,10 @@ def _post_process(code: str) -> str:
     code = code.replace('await ', '')
     code = code.replace('async def ', 'def ')
 
+    # Inline TS constants that were imported but not translated
+    # Extract values from source files generically
+    code = _inline_constants(code)
+
     # Add lazy init for self.X attributes set by other methods
     # Generic pattern: if method reads self.X and class has a method
     # that sets self.X, add a call to that method at the start
@@ -183,6 +206,50 @@ def _post_process(code: str) -> str:
             skip_depth = None
         clean.append(line)
     code = '\n'.join(clean)
+
+    return code
+
+
+def _inline_constants(code: str) -> str:
+    """Replace undefined TS constants with their values.
+
+    Reads TS config/source files to extract constant values and
+    inlines them into the translated code.
+    Generic approach: find UPPER_CASE identifiers used but not
+    defined, look them up in TS sources.
+    """
+    import os
+    repo = Path(os.getcwd())
+    config_path = (repo / 'projects/ghostfolio/libs/common'
+                   / 'src/lib/config.ts')
+    if not config_path.exists():
+        return code
+
+    config_src = config_path.read_text(encoding='utf-8')
+
+    # Extract array constants: export const NAME = [values]
+    for m in re.finditer(
+            r'export\s+const\s+(\w+)\s*=\s*\[([^\]]*)\]', config_src):
+        name = m.group(1)
+        if name in code:
+            # Parse the values
+            values_str = m.group(2)
+            # Extract quoted strings and Type.VALUE references
+            vals = []
+            for v in re.finditer(r"Type\.(\w+)|'([^']*)'", values_str):
+                if v.group(1):
+                    vals.append(repr(v.group(1)))
+                elif v.group(2):
+                    vals.append(repr(v.group(2)))
+            if vals:
+                code = code.replace(name, f'[{", ".join(vals)}]')
+
+    # Extract string constants: export const NAME = 'value'
+    for m in re.finditer(
+            r"export\s+const\s+(\w+)\s*=\s*'([^']*)'", config_src):
+        name, val = m.group(1), m.group(2)
+        if name in code:
+            code = code.replace(name, repr(val))
 
     return code
 

@@ -8,10 +8,29 @@ import math
 from datetime import datetime, timedelta, date
 from decimal import Decimal
 
-def _ga(obj, key, default=None):
+import threading
+gactx = threading.local()
+
+def ga(obj, key, default=None):
+    """Safe attribute/key access for dicts, lists, objects.
+    Falls back to loop context item for flat data."""
+    if obj is None:
+        ctx = getattr(gactx, "item", None)
+        if ctx is not None:
+            if isinstance(ctx, dict):
+                return ctx.get(key, default)
+            return getattr(ctx, key, default)
+        return default
     if isinstance(obj, dict):
         return obj.get(key, default)
-    return getattr(obj, key, default)
+    if isinstance(obj, (list, tuple)):
+        try:
+            return obj[key]
+        except (IndexError, TypeError):
+            return default
+    if isinstance(key, str):
+        return getattr(obj, key, default)
+    return default
 
 
 # --- from portfolio.helper.ts ---
@@ -28,32 +47,32 @@ def get_factor(activityType):
 
 # --- from calculation-helper.ts ---
 def get_annualized_performance_percent(daysInMarket, netPerformancePercentage):
-    if (_is_number(daysInMarket)  and  (daysInMarket > 0)):
+    if (is_number(daysInMarket)  and  (daysInMarket > 0)):
         exponent = float((Decimal(str(365)) / daysInMarket))
         growthFactor = Math.pow(float((netPerformancePercentage + 1)), exponent)
-        if isFinite(growthFactor):
+        if is_finite(growthFactor):
             return (Decimal(str(growthFactor)) - 1)
     return Decimal(str(0))
 
 def get_interval_from_date_range(aDateRange, portfolioStart=None):
-    endDate = _end_of_day(datetime.now())
+    endDate = end_of_day(datetime.now())
     startDate = portfolioStart
     if aDateRange == '1d':
-        startDate = max([startDate, _sub_days(resetHours(datetime.now()), 1)])
+        startDate = max([startDate, sub_days(reset_hours(datetime.now()), 1)])
     elif aDateRange == 'mtd':
-        startDate = max([startDate, _sub_days(startOfMonth(resetHours(datetime.now())), 1)])
+        startDate = max([startDate, sub_days(start_of_month(reset_hours(datetime.now())), 1)])
     elif aDateRange == 'wtd':
-        startDate = max([startDate, _sub_days(startOfWeek(resetHours(datetime.now()), {'weekStartsOn': 1}), 1)])
+        startDate = max([startDate, sub_days(start_of_week(reset_hours(datetime.now()), {'weekStartsOn': 1}), 1)])
     elif aDateRange == 'ytd':
-        startDate = max([startDate, _sub_days(_start_of_year(resetHours(datetime.now())), 1)])
+        startDate = max([startDate, sub_days(start_of_year(reset_hours(datetime.now())), 1)])
     elif aDateRange == '1y':
-        startDate = max([startDate, subYears(resetHours(datetime.now()), 1)])
+        startDate = max([startDate, sub_years(reset_hours(datetime.now()), 1)])
     elif aDateRange == '5y':
-        startDate = max([startDate, subYears(resetHours(datetime.now()), 5)])
+        startDate = max([startDate, sub_years(reset_hours(datetime.now()), 5)])
     elif aDateRange == 'max':
         pass
     else:
-        endDate = _end_of_year(_parse_date(aDateRange))
+        endDate = end_of_year(_parse_date(aDateRange))
         startDate = max([startDate, _parse_date(aDateRange)])
     return {'endDate': endDate, 'startDate': startDate}
 
@@ -66,8 +85,8 @@ def calculate_benchmark_trend(days, historicalData):
     hasEnoughData = (len(historicalData) >= (2 * days))
     if not hasEnoughData:
         return 'UNKNOWN'
-    recentPeriodAverage = calculateMovingAverage({'days': days, 'prices': [Decimal(str(x.get('marketPrice'))) for x in historicalData[0:days]]})
-    pastPeriodAverage = calculateMovingAverage({'days': days, 'prices': [Decimal(str(x.get('marketPrice'))) for x in historicalData[days:(2 * days)]]})
+    recentPeriodAverage = calculate_moving_average({'days': days, 'prices': [Decimal(str(x.get('marketPrice'))) for x in historicalData[0:days]]})
+    pastPeriodAverage = calculate_moving_average({'days': days, 'prices': [Decimal(str(x.get('marketPrice'))) for x in historicalData[days:(2 * days)]]})
     if (recentPeriodAverage > pastPeriodAverage):
         return 'UP'
     if (recentPeriodAverage < pastPeriodAverage):
@@ -104,7 +123,7 @@ def encode_data_source(aDataSource):
 
     try:
         numericValue = value.replace(re.compile("[^\\d.,'’\\s]"), '')
-        parser = NumberParser(locale)
+        parser = NumberParser('en-US')
         return parser.parse(numericValue)
     except Exception as e:
         return None
@@ -117,15 +136,15 @@ def get_asset_profile_identifier(dataSource, symbol):
     return f"{dataSource}-{symbol}"
 
 def get_background_color(aColorScheme):
-    return getCssVariable(('--dark-background' if ((aColorScheme == 'DARK')  or  _ga(window.match_media('(prefers-color-scheme: dark)'), "matches")) else '--light-background'))
+    return get_css_variable(('--dark-background' if ((aColorScheme == 'DARK')  or  ga(window.match_media('(prefers-color-scheme: dark)'), "matches")) else '--light-background'))
 
 def get_css_variable(aCssVariable):
-    return getComputedStyle(_ga(document, "documentElement")).get_property_value(aCssVariable)
+    return get_computed_style(ga(document, "documentElement")).get_property_value(aCssVariable)
 
 def get_currency_from_symbol(aSymbol=''):
-    return aSymbol.replace(DEFAULT_CURRENCY, '')
+    return aSymbol.replace('USD', '')
 
-def get_date_fns_locale(aLanguageCode):
+
     if (aLanguageCode == 'ca'):
         return ca
     elif (aLanguageCode == 'de'):
@@ -153,7 +172,7 @@ def get_date_fns_locale(aLanguageCode):
     return None
 
 def get_date_format_string(aLocale):
-    formatObject = Intl.DateTimeFormat(aLocale).format_to_parts(datetime.now())
+    formatObject = ga(Intl, "DateTimeFormat")(aLocale).format_to_parts(datetime.now())
 
 
 
@@ -168,18 +187,18 @@ def get_date_format_string(aLocale):
 
 
 
-    value = _lodash_get(object, path)
-    if isNil(value):
+    value = lodash_get(object, path)
+    if is_nil(value):
         return ''
-    return (value.to_locale_lower_case() if isString(value) else value)
+
 
 def get_number_format_decimal(aLocale):
-    formatObject = Intl.NumberFormat(aLocale).format_to_parts(9999.99)
-    return _ga(next((x for x in formatObject if (x.get('type') == 'decimal')), None), "value")
+    formatObject = ga(Intl, "NumberFormat")(aLocale).format_to_parts(9999.99)
+    return ga(next((x for x in formatObject if (x.get('type') == 'decimal')), None), "value")
 
 def get_number_format_group(aLocale=None):
-    formatObject = Intl.NumberFormat(aLocale, {'useGrouping': True}).format_to_parts(9999.99)
-    return _ga(next((x for x in formatObject if (x.get('type') == 'group')), None), "value")
+    formatObject = ga(Intl, "NumberFormat")(aLocale, {'useGrouping': True}).format_to_parts(9999.99)
+    return ga(next((x for x in formatObject if (x.get('type') == 'group')), None), "value")
 
 def get_start_of_utc_date(aDate):
     date = _parse_date(aDate)
@@ -192,25 +211,25 @@ def get_sum(aArray):
     return Decimal(str(0))
 
 def get_text_color(aColorScheme):
-    cssVariable = getCssVariable(('--light-primary-text' if ((aColorScheme == 'DARK')  or  _ga(window.match_media('(prefers-color-scheme: dark)'), "matches")) else '--dark-primary-text'))
+    cssVariable = get_css_variable(('--light-primary-text' if ((aColorScheme == 'DARK')  or  ga(window.match_media('(prefers-color-scheme: dark)'), "matches")) else '--dark-primary-text'))
     r, g, b = cssVariable.split(',')
     return f"{r}, {g}, {b}"
 
 def get_today():
-    year = getYear(datetime.now())
-    month = getMonth(datetime.now())
-    day = getDate(datetime.now())
+    year = get_year(datetime.now())
+    month = get_month(datetime.now())
+    day = get_date(datetime.now())
     return _parse_date(datetime.utc(year, month, day))
 
 def get_utc(aDateString):
     yearString, monthString, dayString = aDateString.split('-')
-    return _parse_date(datetime.utc(parseInt(yearString, 10), (parseInt(monthString, 10) - 1), parseInt(dayString, 10)))
+    return _parse_date(datetime.utc(parse_int(yearString, 10), (parse_int(monthString, 10) - 1), parse_int(dayString, 10)))
 
 def get_yesterday():
-    year = getYear(datetime.now())
-    month = getMonth(datetime.now())
-    day = getDate(datetime.now())
-    return _sub_days(_parse_date(datetime.utc(year, month, day)), 1)
+    year = get_year(datetime.now())
+    month = get_month(datetime.now())
+    day = get_date(datetime.now())
+    return sub_days(_parse_date(datetime.utc(year, month, day)), 1)
 
 def group_by(key, arr):
     map = {}
