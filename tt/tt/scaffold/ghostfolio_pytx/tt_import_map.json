@@ -1,0 +1,47 @@
+{
+  "@ghostfolio/api/app/portfolio/calculator/portfolio-calculator": {
+    "module": "app.wrapper.portfolio.calculator.portfolio_calculator",
+    "imports": ["PortfolioCalculator"]
+  },
+  "@ghostfolio/api/app/portfolio/interfaces/portfolio-order-item.interface": {
+    "module": "app.wrapper.portfolio.interfaces",
+    "imports": ["PortfolioOrderItem"]
+  },
+  "@ghostfolio/api/app/portfolio/interfaces/portfolio-order.interface": {
+    "module": "app.wrapper.portfolio.interfaces",
+    "imports": ["PortfolioOrder"]
+  },
+  "@ghostfolio/api/app/portfolio/current-rate.service": {
+    "module": "app.wrapper.portfolio.current_rate_service",
+    "imports": ["CurrentRateService"]
+  },
+  "@ghostfolio/api/helper/portfolio.helper": null,
+  "@ghostfolio/common/calculation-helper": null,
+  "@ghostfolio/common/helper": null,
+  "@ghostfolio/common/interfaces": null,
+  "@ghostfolio/common/models": null,
+  "@ghostfolio/common/types": null,
+  "@ghostfolio/common/types/performance-calculation-type.type": null,
+  "@ghostfolio/common/config": null,
+  "@ghostfolio/api/services/configuration/configuration.service": null,
+  "@ghostfolio/api/services/exchange-rate-data/exchange-rate-data.service": null,
+  "@ghostfolio/api/services/interfaces/interfaces": null,
+  "@ghostfolio/api/services/queues/portfolio-snapshot/portfolio-snapshot.service": null,
+  "@ghostfolio/api/app/redis-cache/redis-cache.service": null,
+  "@ghostfolio/api/interceptors/performance-logging/performance-logging.interceptor": null,
+  "@nestjs/common": null,
+  "@prisma/client": null,
+  "big.js": {
+    "module": "decimal",
+    "imports": ["Decimal"]
+  },
+  "date-fns": {
+    "module": "datetime",
+    "imports": ["date", "timedelta"]
+  },
+  "lodash": {
+    "module": "copy",
+    "imports": ["deepcopy"]
+  },
+  "class-transformer": null
+}

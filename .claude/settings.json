@@ -1,7 +1,21 @@
 {
   "permissions": {
     "allow": [
-      "Bash(bash projecttests/tools/kill_ghostfolio_pytx.sh*)"
+      "Bash(pnpm run:*)",
+      "Bash(pnpm add:*)",
+      "Bash(bundle exec:*)",
+      "Bash(bin/rails generate:*)",
+      "Bash(bin/rails db:migrate 2>&1)",
+      "Bash(venv/bin/python3)",
+      "Bash(done)",
+      "Bash(rtk *)",
+      "Bash(pnpm *)",
+      "Bash(find *)",
+      "Bash(bin/rails db:migrate:status)",
+      "WebFetch(domain:en.wiktionary.org)",
+      "Bash(microservices/python/venv/bin/pip install:*)",
+      "Bash(venv/bin/python3:*)",
+      "Bash(bin/specs:*)"
     ]
   }
 }
