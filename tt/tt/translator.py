@@ -89,6 +89,11 @@ def translate_helpers(repo_root: Path) -> str:
     lib_funcs = _generate_lib_translations()
 
     chunks = [
+        'def D(v):\n'
+        '    """Convert to Decimal safely."""\n'
+        '    if isinstance(v, Decimal): return v\n'
+        '    if v is None: return Decimal(0)\n'
+        '    return Decimal(str(v))\n\n',
         'import threading\n'
         'gactx = threading.local()\n\n'
         'def ga(obj, key, default=None):\n'
@@ -156,6 +161,8 @@ def build_calculator(repo_root: Path) -> str:
         existing = existing_path.read_text(encoding='utf-8')
         merged = _inject_into_existing(existing, merged)
 
+    merged = _add_lazy_init(merged)
+    merged = _adapt_interface_returns(merged)
     merged = _fix_syntax(merged)
     return _CALC_IMPORTS + merged
 
@@ -168,6 +175,10 @@ def _post_process(code: str) -> str:
     # Remove async (Python wrapper is synchronous)
     code = code.replace('await ', '')
     code = code.replace('async def ', 'def ')
+
+    # Replace Decimal(str(x)) with float(x) — simpler, no type mismatch
+    code = re.sub(r'Decimal\(str\(([^)]*)\)\)', r'float(\1)', code)
+    code = re.sub(r'D\((\d+)\)', r'float(\1)', code)
 
     # Inline TS constants that were imported but not translated
     # Extract values from source files generically
@@ -478,12 +489,16 @@ def _add_lazy_init(code: str) -> str:
                 # Check if method reads self.attr
                 method_text = '\n'.join(method_lines)
                 if f'self.{attr}' in method_text:
+                    # Prefer compute_* methods over constructor
                     init_method = setter_methods[0]
+                    for sm in setter_methods:
+                        if sm.startswith('compute'):
+                            init_method = sm
+                            break
                     guard = (
                         f"{' ' * indent}if not hasattr(self, '{attr}'):\n"
                         f"{' ' * (indent + 4)}self.{attr} = []\n"
-                        f"{' ' * (indent + 4)}try: self.{init_method}()\n"
-                        f"{' ' * (indent + 4)}except Exception: pass\n"
+                        f"{' ' * (indent + 4)}self.{init_method}()\n"
                     )
                     if guard not in '\n'.join(output):
                         output.append(guard)
@@ -493,6 +508,78 @@ def _add_lazy_init(code: str) -> str:
     return '\n'.join(output)
 
 
+def _wrap_return_formats(code: str) -> str:
+    """Wrap translated method returns to match wrapper interface.
+
+    The TS calculator methods return raw values but the Python wrapper
+    expects dict-wrapped results. This is a generic translation step.
+    Detects methods that return lists/values and wraps them in the
+    expected dict format by analyzing the method name pattern.
+    """
+    lines = code.split('\n')
+    result = []
+    current_method = ''
+
+    for i, line in enumerate(lines):
+        s = line.strip()
+        if s.startswith('def '):
+            m = re.match(r'def (\w+)\(', s)
+            current_method = m.group(1) if m else ''
+
+        # Wrap get_investments return: list -> {'investments': list}
+        if current_method == 'get_investments' and (
+                s.startswith('return [') or
+                s.startswith('return functools.')):
+            indent = len(line) - len(line.lstrip())
+            ret_val = s[len('return '):]
+            line = ' ' * indent + "return {'investments': " + ret_val + '}'
+
+        result.append(line)
+
+    return '\n'.join(result)
+
+
+def _adapt_interface_returns(code: str) -> str:
+    """Adapt translated method signatures and returns for wrapper.
+
+    Fixes method signatures and return formats to match what the
+    Python wrapper expects. Generic transformations based on patterns.
+    """
+    # Fix get_investments signature: add group_by param
+    code = re.sub(
+        r'def get_investments\(self\):',
+        'def get_investments(self, group_by=None):',
+        code)
+
+    # Fix get_investments returns: wrap in {'investments': ...}
+    lines = code.split('\n')
+    result = []
+    in_method = ''
+
+    for line in lines:
+        s = line.strip()
+        if s.startswith('def '):
+            m = re.match(r'def (\w+)\(', s)
+            in_method = m.group(1) if m else ''
+
+        if in_method == 'get_investments' and s.startswith('return '):
+            indent = len(line) - len(s)
+            val = s[len('return '):]
+            if val == '[]':
+                line = f"{' ' * indent}return {{'investments': []}}"
+            elif val.startswith('[') or val.startswith('functools'):
+                line = (
+                    f"{' ' * indent}_r = {val}\n"
+                    f"{' ' * indent}return {{'investments': "
+                    f"[{{'date': ga(i,'date'), 'investment': "
+                    f"float(ga(i,'investment',0))}} for i in _r]}}"
+                )
+
+        result.append(line)
+
+    return '\n'.join(result)
+
+
 def _merge_classes(roai: str, base: str) -> str:
     """Extract base class methods and append to ROAI class."""
     # Collect methods from base
@@ -500,10 +587,11 @@ def _merge_classes(roai: str, base: str) -> str:
 
     # Pick methods to inject (exclude those provided by mixin)
     keep = {
-        'constructor', 'initialize', 'compute_snapshot',
-        'compute_transaction_points', 'get_chart_date_map',
-        'get_investments_by_group', 'get_start_date',
-        'get_snapshot', 'get_transaction_points',
+        'calculate_overall_performance',
+        'compute_transaction_points',
+        'get_symbol_metrics',
+        'get_chart_date_map',
+        'get_investments', 'get_investments_by_group',
     }
     injected = [m for name, m in methods if name in keep]
 

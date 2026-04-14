@@ -8,6 +8,14 @@ import math
 from datetime import datetime, timedelta, date
 from decimal import Decimal
 
+def D(v):
+    """Convert to Decimal safely."""
+    if isinstance(v, Decimal): return v
+    if v is None: return Decimal(0)
+    return Decimal(str(v))
+
+
+
 import threading
 gactx = threading.local()
 
@@ -175,11 +183,11 @@ def get_factor(activityType):
 # --- from calculation-helper.ts ---
 def get_annualized_performance_percent(daysInMarket, netPerformancePercentage):
     if (is_number(daysInMarket)  and  (daysInMarket > 0)):
-        exponent = float((Decimal(str(365)) / daysInMarket))
+        exponent = float((float(365) / daysInMarket))
         growthFactor = Math.pow(float((netPerformancePercentage + 1)), exponent)
         if is_finite(growthFactor):
-            return (Decimal(str(growthFactor)) - 1)
-    return Decimal(str(0))
+            return (float(growthFactor) - 1)
+    return float(0)
 
 def get_interval_from_date_range(aDateRange, portfolioStart=None):
     endDate = end_of_day(datetime.now())
@@ -212,8 +220,8 @@ def calculate_benchmark_trend(days, historicalData):
     hasEnoughData = (len(historicalData) >= (2 * days))
     if not hasEnoughData:
         return 'UNKNOWN'
-    recentPeriodAverage = calculate_moving_average({'days': days, 'prices': [Decimal(str(x.get('marketPrice'))) for x in historicalData[0:days]]})
-    pastPeriodAverage = calculate_moving_average({'days': days, 'prices': [Decimal(str(x.get('marketPrice'))) for x in historicalData[days:(2 * days)]]})
+    recentPeriodAverage = calculate_moving_average({'days': days, 'prices': [float(x.get('marketPrice')) for x in historicalData[0:days]]})
+    pastPeriodAverage = calculate_moving_average({'days': days, 'prices': [float(x.get('marketPrice')) for x in historicalData[days:(2 * days)]]})
     if (recentPeriodAverage > pastPeriodAverage):
         return 'UP'
     if (recentPeriodAverage < pastPeriodAverage):
@@ -221,7 +229,7 @@ def calculate_benchmark_trend(days, historicalData):
     return 'NEUTRAL'
 
 def calculate_moving_average(days, prices):
-    return float((functools.reduce(lambda previous, current: (previous + current), prices, Decimal(str(0))) / days))
+    return float((functools.reduce(lambda previous, current: (previous + current), prices, float(0)) / days))
 
 def capitalize(aString):
     return (aString[0].upper() + aString[1:].lower())
@@ -334,8 +342,8 @@ def get_start_of_utc_date(aDate):
 
 def get_sum(aArray):
     if (len(aArray) > 0):
-        return functools.reduce(lambda a, b: (a + b), aArray, Decimal(str(0)))
-    return Decimal(str(0))
+        return functools.reduce(lambda a, b: (a + b), aArray, float(0))
+    return float(0)
 
 def get_text_color(aColorScheme):
     cssVariable = get_css_variable(('--light-primary-text' if ((aColorScheme == 'DARK')  or  ga(window.match_media('(prefers-color-scheme: dark)'), "matches")) else '--dark-primary-text'))

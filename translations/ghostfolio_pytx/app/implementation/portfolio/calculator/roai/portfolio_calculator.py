@@ -40,8 +40,16 @@ class RoaiPortfolioCalculator(PortfolioCalculator):
         }
 
 
-    def get_investments(self, group_by: str | None = None) -> dict:
-        return {"investments": []}
+    def get_investments(self, group_by=None):
+        if not hasattr(self, 'transaction_points'):
+            self.transaction_points = []
+            self.compute_transaction_points()
+
+        if (len(self.transaction_points) == 0):
+            return {'investments': []}
+        _r = [{'date': ga(x, "date"), 'investment': functools.reduce(lambda investment, transactionPointSymbol: (investment + ga(transactionPointSymbol, "investment")), ga(x, "items"), float(0))} for x in self.transaction_points]
+        return {'investments': [{'date': ga(i,'date'), 'investment': float(ga(i,'investment',0))} for i in _r]}
+
 
 
     def get_holdings(self) -> dict:
@@ -96,17 +104,17 @@ class RoaiPortfolioCalculator(PortfolioCalculator):
 
 
     def calculate_overall_performance(self, positions):
-        currentValueInBaseCurrency = Decimal(str(0))
-        grossPerformance = Decimal(str(0))
-        grossPerformanceWithCurrencyEffect = Decimal(str(0))
+        currentValueInBaseCurrency = float(0)
+        grossPerformance = float(0)
+        grossPerformanceWithCurrencyEffect = float(0)
         hasErrors = False
-        netPerformance = Decimal(str(0))
-        totalFeesWithCurrencyEffect = Decimal(str(0))
-        totalInterestWithCurrencyEffect = Decimal(str(0))
-        totalInvestment = Decimal(str(0))
-        totalInvestmentWithCurrencyEffect = Decimal(str(0))
-        totalTimeWeightedInvestment = Decimal(str(0))
-        totalTimeWeightedInvestmentWithCurrencyEffect = Decimal(str(0))
+        netPerformance = float(0)
+        totalFeesWithCurrencyEffect = float(0)
+        totalInterestWithCurrencyEffect = float(0)
+        totalInvestment = float(0)
+        totalInvestmentWithCurrencyEffect = float(0)
+        totalTimeWeightedInvestment = float(0)
+        totalTimeWeightedInvestmentWithCurrencyEffect = float(0)
         for currentPosition in [x for x in positions if x.get('includeInTotalAssetValue')]:
             if ga(currentPosition, "feeInBaseCurrency"):
                 totalFeesWithCurrencyEffect = (totalFeesWithCurrencyEffect + ga(currentPosition, "feeInBaseCurrency"))
@@ -143,7 +151,7 @@ class RoaiPortfolioCalculator(PortfolioCalculator):
             'createdAt': datetime.now(),
             'errors': [],
             'historicalData': [],
-            'totalLiabilitiesWithCurrencyEffect': Decimal(str(0))
+            'totalLiabilitiesWithCurrencyEffect': float(0)
         }
 
 
@@ -155,16 +163,16 @@ class RoaiPortfolioCalculator(PortfolioCalculator):
         currentExchangeRate = ga(exchangeRates, date_format(datetime.now(), DATE_FORMAT))
         currentValues = {}
         currentValuesWithCurrencyEffect = {}
-        fees = Decimal(str(0))
-        feesAtStartDate = Decimal(str(0))
-        feesAtStartDateWithCurrencyEffect = Decimal(str(0))
-        feesWithCurrencyEffect = Decimal(str(0))
-        grossPerformance = Decimal(str(0))
-        grossPerformanceWithCurrencyEffect = Decimal(str(0))
-        grossPerformanceAtStartDate = Decimal(str(0))
-        grossPerformanceAtStartDateWithCurrencyEffect = Decimal(str(0))
-        grossPerformanceFromSells = Decimal(str(0))
-        grossPerformanceFromSellsWithCurrencyEffect = Decimal(str(0))
+        fees = float(0)
+        feesAtStartDate = float(0)
+        feesAtStartDateWithCurrencyEffect = float(0)
+        feesWithCurrencyEffect = float(0)
+        grossPerformance = float(0)
+        grossPerformanceWithCurrencyEffect = float(0)
+        grossPerformanceAtStartDate = float(0)
+        grossPerformanceAtStartDateWithCurrencyEffect = float(0)
+        grossPerformanceFromSells = float(0)
+        grossPerformanceFromSellsWithCurrencyEffect = float(0)
         initialValue = None
         initialValueWithCurrencyEffect = None
         investmentAtStartDate = None
@@ -172,25 +180,25 @@ class RoaiPortfolioCalculator(PortfolioCalculator):
         investmentValuesAccumulated = {}
         investmentValuesAccumulatedWithCurrencyEffect = {}
         investmentValuesWithCurrencyEffect = {}
-        lastAveragePrice = Decimal(str(0))
-        lastAveragePriceWithCurrencyEffect = Decimal(str(0))
+        lastAveragePrice = float(0)
+        lastAveragePriceWithCurrencyEffect = float(0)
         netPerformanceValues = {}
         netPerformanceValuesWithCurrencyEffect = {}
         timeWeightedInvestmentValues = {}
         timeWeightedInvestmentValuesWithCurrencyEffect = {}
-        totalAccountBalanceInBaseCurrency = Decimal(str(0))
-        totalDividend = Decimal(str(0))
-        totalDividendInBaseCurrency = Decimal(str(0))
-        totalInterest = Decimal(str(0))
-        totalInterestInBaseCurrency = Decimal(str(0))
-        totalInvestment = Decimal(str(0))
-        totalInvestmentFromBuyTransactions = Decimal(str(0))
-        totalInvestmentFromBuyTransactionsWithCurrencyEffect = Decimal(str(0))
-        totalInvestmentWithCurrencyEffect = Decimal(str(0))
-        totalLiabilities = Decimal(str(0))
-        totalLiabilitiesInBaseCurrency = Decimal(str(0))
-        totalQuantityFromBuyTransactions = Decimal(str(0))
-        totalUnits = Decimal(str(0))
+        totalAccountBalanceInBaseCurrency = float(0)
+        totalDividend = float(0)
+        totalDividendInBaseCurrency = float(0)
+        totalInterest = float(0)
+        totalInterestInBaseCurrency = float(0)
+        totalInvestment = float(0)
+        totalInvestmentFromBuyTransactions = float(0)
+        totalInvestmentFromBuyTransactionsWithCurrencyEffect = float(0)
+        totalInvestmentWithCurrencyEffect = float(0)
+        totalLiabilities = float(0)
+        totalLiabilitiesInBaseCurrency = float(0)
+        totalQuantityFromBuyTransactions = float(0)
+        totalUnits = float(0)
         valueAtStartDate = None
         valueAtStartDateWithCurrencyEffect = None
         orders = copy.deepcopy([x for x in self.activities if (ga(x.get('SymbolProfile'), "symbol") == symbol)])
@@ -199,36 +207,36 @@ class RoaiPortfolioCalculator(PortfolioCalculator):
             return {
                 'currentValues': {},
                 'currentValuesWithCurrencyEffect': {},
-                'feesWithCurrencyEffect': Decimal(str(0)),
-                'grossPerformance': Decimal(str(0)),
-                'grossPerformancePercentage': Decimal(str(0)),
-                'grossPerformancePercentageWithCurrencyEffect': Decimal(str(0)),
-                'grossPerformanceWithCurrencyEffect': Decimal(str(0)),
+                'feesWithCurrencyEffect': float(0),
+                'grossPerformance': float(0),
+                'grossPerformancePercentage': float(0),
+                'grossPerformancePercentageWithCurrencyEffect': float(0),
+                'grossPerformanceWithCurrencyEffect': float(0),
                 'hasErrors': False,
-                'initialValue': Decimal(str(0)),
-                'initialValueWithCurrencyEffect': Decimal(str(0)),
+                'initialValue': float(0),
+                'initialValueWithCurrencyEffect': float(0),
                 'investmentValuesAccumulated': {},
                 'investmentValuesAccumulatedWithCurrencyEffect': {},
                 'investmentValuesWithCurrencyEffect': {},
-                'netPerformance': Decimal(str(0)),
-                'netPerformancePercentage': Decimal(str(0)),
+                'netPerformance': float(0),
+                'netPerformancePercentage': float(0),
                 'netPerformancePercentageWithCurrencyEffectMap': {},
                 'netPerformanceValues': {},
                 'netPerformanceValuesWithCurrencyEffect': {},
                 'netPerformanceWithCurrencyEffectMap': {},
-                'timeWeightedInvestment': Decimal(str(0)),
+                'timeWeightedInvestment': float(0),
                 'timeWeightedInvestmentValues': {},
                 'timeWeightedInvestmentValuesWithCurrencyEffect': {},
-                'timeWeightedInvestmentWithCurrencyEffect': Decimal(str(0)),
-                'totalAccountBalanceInBaseCurrency': Decimal(str(0)),
-                'totalDividend': Decimal(str(0)),
-                'totalDividendInBaseCurrency': Decimal(str(0)),
-                'totalInterest': Decimal(str(0)),
-                'totalInterestInBaseCurrency': Decimal(str(0)),
-                'totalInvestment': Decimal(str(0)),
-                'totalInvestmentWithCurrencyEffect': Decimal(str(0)),
-                'totalLiabilities': Decimal(str(0)),
-                'totalLiabilitiesInBaseCurrency': Decimal(str(0))
+                'timeWeightedInvestmentWithCurrencyEffect': float(0),
+                'totalAccountBalanceInBaseCurrency': float(0),
+                'totalDividend': float(0),
+                'totalDividendInBaseCurrency': float(0),
+                'totalInterest': float(0),
+                'totalInterestInBaseCurrency': float(0),
+                'totalInvestment': float(0),
+                'totalInvestmentWithCurrencyEffect': float(0),
+                'totalLiabilities': float(0),
+                'totalLiabilitiesInBaseCurrency': float(0)
             }
         dateOfFirstTransaction = _parse_date(ga(ga(orders, 0), "date"))
         endDateString = date_format(end, DATE_FORMAT)
@@ -239,59 +247,59 @@ class RoaiPortfolioCalculator(PortfolioCalculator):
         if ((((dataSource == 'MANUAL')  and  (ga(latestActivity, "type") in ['BUY', 'SELL']))  and  ga(latestActivity, "unitPrice"))  and  not unitPriceAtEndDate):
             unitPriceAtEndDate = ga(latestActivity, "unitPrice")
         elif isCash:
-            unitPriceAtEndDate = Decimal(str(1))
+            unitPriceAtEndDate = float(1)
         if (not unitPriceAtEndDate  or  (not unitPriceAtStartDate  and  is_before(dateOfFirstTransaction, start))):
             return {
                 'currentValues': {},
                 'currentValuesWithCurrencyEffect': {},
-                'feesWithCurrencyEffect': Decimal(str(0)),
-                'grossPerformance': Decimal(str(0)),
-                'grossPerformancePercentage': Decimal(str(0)),
-                'grossPerformancePercentageWithCurrencyEffect': Decimal(str(0)),
-                'grossPerformanceWithCurrencyEffect': Decimal(str(0)),
+                'feesWithCurrencyEffect': float(0),
+                'grossPerformance': float(0),
+                'grossPerformancePercentage': float(0),
+                'grossPerformancePercentageWithCurrencyEffect': float(0),
+                'grossPerformanceWithCurrencyEffect': float(0),
                 'hasErrors': True,
-                'initialValue': Decimal(str(0)),
-                'initialValueWithCurrencyEffect': Decimal(str(0)),
+                'initialValue': float(0),
+                'initialValueWithCurrencyEffect': float(0),
                 'investmentValuesAccumulated': {},
                 'investmentValuesAccumulatedWithCurrencyEffect': {},
                 'investmentValuesWithCurrencyEffect': {},
-                'netPerformance': Decimal(str(0)),
-                'netPerformancePercentage': Decimal(str(0)),
+                'netPerformance': float(0),
+                'netPerformancePercentage': float(0),
                 'netPerformancePercentageWithCurrencyEffectMap': {},
                 'netPerformanceWithCurrencyEffectMap': {},
                 'netPerformanceValues': {},
                 'netPerformanceValuesWithCurrencyEffect': {},
-                'timeWeightedInvestment': Decimal(str(0)),
+                'timeWeightedInvestment': float(0),
                 'timeWeightedInvestmentValues': {},
                 'timeWeightedInvestmentValuesWithCurrencyEffect': {},
-                'timeWeightedInvestmentWithCurrencyEffect': Decimal(str(0)),
-                'totalAccountBalanceInBaseCurrency': Decimal(str(0)),
-                'totalDividend': Decimal(str(0)),
-                'totalDividendInBaseCurrency': Decimal(str(0)),
-                'totalInterest': Decimal(str(0)),
-                'totalInterestInBaseCurrency': Decimal(str(0)),
-                'totalInvestment': Decimal(str(0)),
-                'totalInvestmentWithCurrencyEffect': Decimal(str(0)),
-                'totalLiabilities': Decimal(str(0)),
-                'totalLiabilitiesInBaseCurrency': Decimal(str(0))
+                'timeWeightedInvestmentWithCurrencyEffect': float(0),
+                'totalAccountBalanceInBaseCurrency': float(0),
+                'totalDividend': float(0),
+                'totalDividendInBaseCurrency': float(0),
+                'totalInterest': float(0),
+                'totalInterestInBaseCurrency': float(0),
+                'totalInvestment': float(0),
+                'totalInvestmentWithCurrencyEffect': float(0),
+                'totalLiabilities': float(0),
+                'totalLiabilitiesInBaseCurrency': float(0)
             }
         orders.append({
             'date': startDateString,
-            'fee': Decimal(str(0)),
-            'feeInBaseCurrency': Decimal(str(0)),
+            'fee': float(0),
+            'feeInBaseCurrency': float(0),
             'itemType': 'start',
-            'quantity': Decimal(str(0)),
+            'quantity': float(0),
             'SymbolProfile': {'dataSource': dataSource, 'symbol': symbol, 'assetSubClass': ('CASH' if isCash else None)},
             'type': 'BUY',
             'unitPrice': unitPriceAtStartDate
         })
         orders.append({
             'date': endDateString,
-            'fee': Decimal(str(0)),
-            'feeInBaseCurrency': Decimal(str(0)),
+            'fee': float(0),
+            'feeInBaseCurrency': float(0),
             'itemType': 'end',
             'SymbolProfile': {'dataSource': dataSource, 'symbol': symbol, 'assetSubClass': ('CASH' if isCash else None)},
-            'quantity': Decimal(str(0)),
+            'quantity': float(0),
             'type': 'BUY',
             'unitPrice': unitPriceAtEndDate
         })
@@ -314,9 +322,9 @@ class RoaiPortfolioCalculator(PortfolioCalculator):
             else:
                 orders.append({
                     'date': dateString,
-                    'fee': Decimal(str(0)),
-                    'feeInBaseCurrency': Decimal(str(0)),
-                    'quantity': Decimal(str(0)),
+                    'fee': float(0),
+                    'feeInBaseCurrency': float(0),
+                    'quantity': float(0),
                     'SymbolProfile': {'dataSource': dataSource, 'symbol': symbol, 'assetSubClass': ('CASH' if isCash else None)},
                     'type': 'BUY',
                     'unitPrice': (ga(ga(marketSymbolMap, dateString), symbol)  or  lastUnitPrice),
@@ -328,8 +336,8 @@ class RoaiPortfolioCalculator(PortfolioCalculator):
         indexOfStartOrder = next((i for i, x in enumerate(orders) if (x.get('itemType') == 'start')), -1)
         indexOfEndOrder = next((i for i, x in enumerate(orders) if (x.get('itemType') == 'end')), -1)
         totalInvestmentDays = 0
-        sumOfTimeWeightedInvestments = Decimal(str(0))
-        sumOfTimeWeightedInvestmentsWithCurrencyEffect = Decimal(str(0))
+        sumOfTimeWeightedInvestments = float(0)
+        sumOfTimeWeightedInvestmentsWithCurrencyEffect = float(0)
         for i in range(len(orders)):
             order = ga(orders, i)
             if ga(PortfolioCalculator, "ENABLE_LOGGING"):
@@ -361,17 +369,17 @@ class RoaiPortfolioCalculator(PortfolioCalculator):
                 pass
 
 
-            marketPriceInBaseCurrency = ((ga(order, "unitPriceFromMarketData") * (currentExchangeRate  or  1))  or  Decimal(str(0)))
-            marketPriceInBaseCurrencyWithCurrencyEffect = ((ga(order, "unitPriceFromMarketData") * (exchangeRateAtOrderDate  or  1))  or  Decimal(str(0)))
+            marketPriceInBaseCurrency = ((ga(order, "unitPriceFromMarketData") * (currentExchangeRate  or  1))  or  float(0))
+            marketPriceInBaseCurrencyWithCurrencyEffect = ((ga(order, "unitPriceFromMarketData") * (exchangeRateAtOrderDate  or  1))  or  float(0))
             valueOfInvestmentBeforeTransaction = (totalUnits * marketPriceInBaseCurrency)
             valueOfInvestmentBeforeTransactionWithCurrencyEffect = (totalUnits * marketPriceInBaseCurrencyWithCurrencyEffect)
             if (not investmentAtStartDate  and  (i >= indexOfStartOrder)):
-                investmentAtStartDate = (totalInvestment  or  Decimal(str(0)))
-                investmentAtStartDateWithCurrencyEffect = (totalInvestmentWithCurrencyEffect  or  Decimal(str(0)))
+                investmentAtStartDate = (totalInvestment  or  float(0))
+                investmentAtStartDateWithCurrencyEffect = (totalInvestmentWithCurrencyEffect  or  float(0))
                 valueAtStartDate = valueOfInvestmentBeforeTransaction
                 valueAtStartDateWithCurrencyEffect = valueOfInvestmentBeforeTransactionWithCurrencyEffect
-            transactionInvestment = Decimal(str(0))
-            transactionInvestmentWithCurrencyEffect = Decimal(str(0))
+            transactionInvestment = float(0)
+            transactionInvestmentWithCurrencyEffect = float(0)
             if (ga(order, "type") == 'BUY'):
                 transactionInvestment = ((ga(order, "quantity") * ga(order, "unitPriceInBaseCurrency")) * get_factor(ga(order, "type")))
                 transactionInvestmentWithCurrencyEffect = ((ga(order, "quantity") * ga(order, "unitPriceInBaseCurrencyWithCurrencyEffect")) * get_factor(ga(order, "type")))
@@ -402,16 +410,16 @@ class RoaiPortfolioCalculator(PortfolioCalculator):
             totalUnits = (totalUnits + (ga(order, "quantity") * get_factor(ga(order, "type"))))
             valueOfInvestment = (totalUnits * marketPriceInBaseCurrency)
             valueOfInvestmentWithCurrencyEffect = (totalUnits * marketPriceInBaseCurrencyWithCurrencyEffect)
-            grossPerformanceFromSell = (((ga(order, "unitPriceInBaseCurrency") - lastAveragePrice) * ga(order, "quantity")) if (ga(order, "type") == 'SELL') else Decimal(str(0)))
-            grossPerformanceFromSellWithCurrencyEffect = (((ga(order, "unitPriceInBaseCurrencyWithCurrencyEffect") - lastAveragePriceWithCurrencyEffect) * ga(order, "quantity")) if (ga(order, "type") == 'SELL') else Decimal(str(0)))
+            grossPerformanceFromSell = (((ga(order, "unitPriceInBaseCurrency") - lastAveragePrice) * ga(order, "quantity")) if (ga(order, "type") == 'SELL') else float(0))
+            grossPerformanceFromSellWithCurrencyEffect = (((ga(order, "unitPriceInBaseCurrencyWithCurrencyEffect") - lastAveragePriceWithCurrencyEffect) * ga(order, "quantity")) if (ga(order, "type") == 'SELL') else float(0))
             grossPerformanceFromSells = (grossPerformanceFromSells + grossPerformanceFromSell)
             grossPerformanceFromSellsWithCurrencyEffect = (grossPerformanceFromSellsWithCurrencyEffect + grossPerformanceFromSellWithCurrencyEffect)
-            lastAveragePrice = (Decimal(str(0)) if (totalQuantityFromBuyTransactions == 0) else (totalInvestmentFromBuyTransactions / totalQuantityFromBuyTransactions))
-            lastAveragePriceWithCurrencyEffect = (Decimal(str(0)) if (totalQuantityFromBuyTransactions == 0) else (totalInvestmentFromBuyTransactionsWithCurrencyEffect / totalQuantityFromBuyTransactions))
+            lastAveragePrice = (float(0) if (totalQuantityFromBuyTransactions == 0) else (totalInvestmentFromBuyTransactions / totalQuantityFromBuyTransactions))
+            lastAveragePriceWithCurrencyEffect = (float(0) if (totalQuantityFromBuyTransactions == 0) else (totalInvestmentFromBuyTransactionsWithCurrencyEffect / totalQuantityFromBuyTransactions))
             if (totalUnits == 0):
-                totalInvestmentFromBuyTransactions = Decimal(str(0))
-                totalInvestmentFromBuyTransactionsWithCurrencyEffect = Decimal(str(0))
-                totalQuantityFromBuyTransactions = Decimal(str(0))
+                totalInvestmentFromBuyTransactions = float(0)
+                totalInvestmentFromBuyTransactionsWithCurrencyEffect = float(0)
+                totalQuantityFromBuyTransactions = float(0)
             if ga(PortfolioCalculator, "ENABLE_LOGGING"):
                 print.log('grossPerformanceFromSells', float(grossPerformanceFromSells))
                 print.log('grossPerformanceFromSellWithCurrencyEffect', float(grossPerformanceFromSellWithCurrencyEffect))
@@ -453,13 +461,13 @@ class RoaiPortfolioCalculator(PortfolioCalculator):
         totalGrossPerformance = (grossPerformance - grossPerformanceAtStartDate)
         totalGrossPerformanceWithCurrencyEffect = (grossPerformanceWithCurrencyEffect - grossPerformanceAtStartDateWithCurrencyEffect)
         totalNetPerformance = ((grossPerformance - grossPerformanceAtStartDate) - (fees - feesAtStartDate))
-        timeWeightedAverageInvestmentBetweenStartAndEndDate = ((sumOfTimeWeightedInvestments / totalInvestmentDays) if (totalInvestmentDays > 0) else Decimal(str(0)))
-        timeWeightedAverageInvestmentBetweenStartAndEndDateWithCurrencyEffect = ((sumOfTimeWeightedInvestmentsWithCurrencyEffect / totalInvestmentDays) if (totalInvestmentDays > 0) else Decimal(str(0)))
-        grossPerformancePercentage = ((totalGrossPerformance / timeWeightedAverageInvestmentBetweenStartAndEndDate) if (timeWeightedAverageInvestmentBetweenStartAndEndDate > 0) else Decimal(str(0)))
-        grossPerformancePercentageWithCurrencyEffect = ((totalGrossPerformanceWithCurrencyEffect / timeWeightedAverageInvestmentBetweenStartAndEndDateWithCurrencyEffect) if (timeWeightedAverageInvestmentBetweenStartAndEndDateWithCurrencyEffect > 0) else Decimal(str(0)))
-        feesPerUnit = (((fees - feesAtStartDate) / totalUnits) if (totalUnits > 0) else Decimal(str(0)))
-        feesPerUnitWithCurrencyEffect = (((feesWithCurrencyEffect - feesAtStartDateWithCurrencyEffect) / totalUnits) if (totalUnits > 0) else Decimal(str(0)))
-        netPerformancePercentage = ((totalNetPerformance / timeWeightedAverageInvestmentBetweenStartAndEndDate) if (timeWeightedAverageInvestmentBetweenStartAndEndDate > 0) else Decimal(str(0)))
+        timeWeightedAverageInvestmentBetweenStartAndEndDate = ((sumOfTimeWeightedInvestments / totalInvestmentDays) if (totalInvestmentDays > 0) else float(0))
+        timeWeightedAverageInvestmentBetweenStartAndEndDateWithCurrencyEffect = ((sumOfTimeWeightedInvestmentsWithCurrencyEffect / totalInvestmentDays) if (totalInvestmentDays > 0) else float(0))
+        grossPerformancePercentage = ((totalGrossPerformance / timeWeightedAverageInvestmentBetweenStartAndEndDate) if (timeWeightedAverageInvestmentBetweenStartAndEndDate > 0) else float(0))
+        grossPerformancePercentageWithCurrencyEffect = ((totalGrossPerformanceWithCurrencyEffect / timeWeightedAverageInvestmentBetweenStartAndEndDateWithCurrencyEffect) if (timeWeightedAverageInvestmentBetweenStartAndEndDateWithCurrencyEffect > 0) else float(0))
+        feesPerUnit = (((fees - feesAtStartDate) / totalUnits) if (totalUnits > 0) else float(0))
+        feesPerUnitWithCurrencyEffect = (((feesWithCurrencyEffect - feesAtStartDateWithCurrencyEffect) / totalUnits) if (totalUnits > 0) else float(0))
+        netPerformancePercentage = ((totalNetPerformance / timeWeightedAverageInvestmentBetweenStartAndEndDate) if (timeWeightedAverageInvestmentBetweenStartAndEndDate > 0) else float(0))
         netPerformancePercentageWithCurrencyEffectMap = {}
         netPerformanceWithCurrencyEffectMap = {}
         for dateRange in ['1d', '1y', '5y', 'max', 'mtd', 'wtd', 'ytd']:
@@ -470,10 +478,10 @@ class RoaiPortfolioCalculator(PortfolioCalculator):
                 startDate = start
             rangeEndDateString = date_format(endDate, DATE_FORMAT)
             rangeStartDateString = date_format(startDate, DATE_FORMAT)
-            currentValuesAtDateRangeStartWithCurrencyEffect = (ga(currentValuesWithCurrencyEffect, rangeStartDateString)  or  Decimal(str(0)))
-            investmentValuesAccumulatedAtStartDateWithCurrencyEffect = (ga(investmentValuesAccumulatedWithCurrencyEffect, rangeStartDateString)  or  Decimal(str(0)))
+            currentValuesAtDateRangeStartWithCurrencyEffect = (ga(currentValuesWithCurrencyEffect, rangeStartDateString)  or  float(0))
+            investmentValuesAccumulatedAtStartDateWithCurrencyEffect = (ga(investmentValuesAccumulatedWithCurrencyEffect, rangeStartDateString)  or  float(0))
             grossPerformanceAtDateRangeStartWithCurrencyEffect = (currentValuesAtDateRangeStartWithCurrencyEffect - investmentValuesAccumulatedAtStartDateWithCurrencyEffect)
-            average = Decimal(str(0))
+            average = float(0)
             dayCount = 0
             i = (len(self.chart_dates) - 1)
             while (i >= 0):
@@ -542,252 +550,10 @@ class RoaiPortfolioCalculator(PortfolioCalculator):
         }
 
 
-    def constructor(self, accountBalanceItems=None, activities=None, configurationService=None, currency=None, currentRateService=None, exchangeRateDataService=None, filters=None, portfolioSnapshotService=None, redisCacheService=None, userId=None):
-        if not hasattr(self, 'snapshot'):
-            self.snapshot = []
-            try: self.initialize()
-            except Exception: pass
-
-        self.account_balance_items = accountBalanceItems
-        self.configuration_service = configurationService
-        self.currency = currency
-        self.current_rate_service = currentRateService
-        self.exchange_rate_data_service = exchangeRateDataService
-        self.filters = filters
-        dateOfFirstActivity = datetime.now()
-        if self.account_balance_items[0]:
-            dateOfFirstActivity = parse_date(self.account_balance_items[0].date)
-
-        self.portfolio_snapshot_service = portfolioSnapshotService
-        self.redis_cache_service = redisCacheService
-        self.user_id = userId
-        endDate, startDate = get_interval_from_date_range('max', sub_days(dateOfFirstActivity, 1))
-        self.end_date = end_of_day(endDate)
-        self.start_date = start_of_day(startDate)
-        self.compute_transaction_points()
-        self.snapshot_promise = self.initialize()
-
-
-
-    def compute_snapshot(self):
-        if not hasattr(self, 'account_balance_items'):
-            self.account_balance_items = []
-            try: self.constructor()
-            except Exception: pass
-
-        if not hasattr(self, 'configuration_service'):
-            self.configuration_service = []
-            try: self.constructor()
-            except Exception: pass
-
-        if not hasattr(self, 'currency'):
-            self.currency = []
-            try: self.constructor()
-            except Exception: pass
-
-        if not hasattr(self, 'current_rate_service'):
-            self.current_rate_service = []
-            try: self.constructor()
-            except Exception: pass
-
-        if not hasattr(self, 'exchange_rate_data_service'):
-            self.exchange_rate_data_service = []
-            try: self.constructor()
-            except Exception: pass
-
-        if not hasattr(self, 'end_date'):
-            self.end_date = []
-            try: self.constructor()
-            except Exception: pass
-
-        if not hasattr(self, 'start_date'):
-            self.start_date = []
-            try: self.constructor()
-            except Exception: pass
-
-        if not hasattr(self, 'transaction_points'):
-            self.transaction_points = []
-            try: self.compute_transaction_points()
-            except Exception: pass
-
-        lastTransactionPoint = self.transaction_points[-1]
-        transactionPoints = [x for x in self.transaction_points if is_before(parse_date(x.get('date')), self.end_date)]
-        if not len(transactionPoints):
-            return {
-                'activitiesCount': 0,
-                'createdAt': datetime.now(),
-                'currentValueInBaseCurrency': Decimal(str(0)),
-                'errors': [],
-                'hasErrors': False,
-                'historicalData': [],
-                'positions': [],
-                'totalFeesWithCurrencyEffect': Decimal(str(0)),
-                'totalInterestWithCurrencyEffect': Decimal(str(0)),
-                'totalInvestment': Decimal(str(0)),
-                'totalInvestmentWithCurrencyEffect': Decimal(str(0)),
-                'totalLiabilitiesWithCurrencyEffect': Decimal(str(0))
-            }
-        currencies = {}
-        dataGatheringItems = []
-        firstIndex = len(transactionPoints)
-        firstTransactionPoint = None
-        totalInterestWithCurrencyEffect = Decimal(str(0))
-        totalLiabilitiesWithCurrencyEffect = Decimal(str(0))
-        for _item in ga(ga(transactionPoints, (firstIndex - 1)), "items"):
-            gactx.item = _item
-            assetSubClass = ga(_item, 'assetSubClass')
-            currency = ga(_item, 'currency')
-            dataSource = ga(_item, 'dataSource')
-            symbol = ga(_item, 'symbol')
-            if (assetSubClass != 'CASH'):
-                dataGatheringItems.append({'dataSource': dataSource, 'symbol': symbol})
-
-        for i in range(len(transactionPoints)):
-            if (not is_before(parse_date(ga(ga(transactionPoints, i), "date")), self.start_date)  and  (firstTransactionPoint == None)):
-                firstTransactionPoint = ga(transactionPoints, i)
-                firstIndex = i
-        exchangeRatesByCurrency = self.exchange_rate_data_service.get_exchange_rates_by_currency({
-
-            'endDate': self.end_date,
-            'startDate': self.start_date,
-            'targetCurrency': self.currency
-        })
-        dataProviderInfos, currentRateErrors, marketSymbols = self.current_rate_service.get_values({'dataGatheringItems': dataGatheringItems, 'dateQuery': {'gte': self.start_date, 'lt': self.end_date}})
-        self.data_provider_infos = dataProviderInfos
-        marketSymbolMap = {}
-        for marketSymbol in marketSymbols:
-            date = date_format(ga(marketSymbol, "date"), DATE_FORMAT)
-            if not ga(marketSymbolMap, date):
-                pass
-
-            if ga(marketSymbol, "marketPrice"):
-                pass
-
-        endDateString = date_format(self.end_date, DATE_FORMAT)
-        daysInMarket = difference_in_days(self.end_date, self.start_date)
-        chartDateMap = self.get_chart_date_map({'endDate': self.end_date, 'startDate': self.start_date, 'step': Math.round((daysInMarket / date_min(daysInMarket, self.configuration_service.get('MAX_CHART_ITEMS'))))})
-        for accountBalanceItem in self.account_balance_items:
-            pass
-
-        chartDates = sort_by(list(chartDateMap.keys()), lambda chartDate: chartDate)
-        if (firstIndex > 0):
-            firstIndex -= 1
-        errors = []
-        hasAnySymbolMetricsErrors = False
-        positions = []
-        accumulatedValuesByDate = {}
-        valuesBySymbol = {}
-        for item in ga(lastTransactionPoint, "items"):
-            marketPriceInBaseCurrency = ((ga(ga(marketSymbolMap, endDateString), ga(item, "symbol"))  or  ga(item, "averagePrice")) * (ga(ga(exchangeRatesByCurrency, f"{ga(item, "currency")}{self.currency}"), endDateString)  or  1))
-            currentValues, currentValuesWithCurrencyEffect, grossPerformance, grossPerformancePercentage, grossPerformancePercentageWithCurrencyEffect, grossPerformanceWithCurrencyEffect, hasErrors, investmentValuesAccumulated, investmentValuesAccumulatedWithCurrencyEffect, investmentValuesWithCurrencyEffect, netPerformance, netPerformancePercentage, netPerformancePercentageWithCurrencyEffectMap, netPerformanceValues, netPerformanceValuesWithCurrencyEffect, netPerformanceWithCurrencyEffectMap, timeWeightedInvestment, timeWeightedInvestmentValues, timeWeightedInvestmentValuesWithCurrencyEffect, timeWeightedInvestmentWithCurrencyEffect, totalDividend, totalDividendInBaseCurrency, totalInterestInBaseCurrency, totalInvestment, totalInvestmentWithCurrencyEffect, totalLiabilitiesInBaseCurrency = self.get_symbol_metrics({
-                'chartDateMap': chartDateMap,
-                'marketSymbolMap': marketSymbolMap,
-                'dataSource': ga(item, "dataSource"),
-                'end': self.end_date,
-                'exchangeRates': ga(exchangeRatesByCurrency, f"{ga(item, "currency")}{self.currency}"),
-                'start': self.start_date,
-                'symbol': ga(item, "symbol")
-            })
-            hasAnySymbolMetricsErrors = (hasAnySymbolMetricsErrors  or  hasErrors)
-            includeInTotalAssetValue = (ga(item, "assetSubClass") != ga(AssetSubClass, "CASH"))
-            if includeInTotalAssetValue:
-                pass
-
-
-
-
-
-
-
-
-
-
-
-            positions.append({
-                'includeInTotalAssetValue': includeInTotalAssetValue,
-                'timeWeightedInvestment': timeWeightedInvestment,
-                'timeWeightedInvestmentWithCurrencyEffect': timeWeightedInvestmentWithCurrencyEffect,
-                'activitiesCount': ga(item, "activitiesCount"),
-                'averagePrice': ga(item, "averagePrice"),
-                'currency': ga(item, "currency"),
-                'dataSource': ga(item, "dataSource"),
-                'dateOfFirstActivity': ga(item, "dateOfFirstActivity"),
-                'dividend': totalDividend,
-                'dividendInBaseCurrency': totalDividendInBaseCurrency,
-                'fee': ga(item, "fee"),
-                'feeInBaseCurrency': ga(item, "feeInBaseCurrency"),
-                'grossPerformance': ((grossPerformance  or  None) if not hasErrors else None),
-                'grossPerformancePercentage': ((grossPerformancePercentage  or  None) if not hasErrors else None),
-                'grossPerformancePercentageWithCurrencyEffect': ((grossPerformancePercentageWithCurrencyEffect  or  None) if not hasErrors else None),
-                'grossPerformanceWithCurrencyEffect': ((grossPerformanceWithCurrencyEffect  or  None) if not hasErrors else None),
-                'includeInHoldings': ga(item, "includeInHoldings"),
-                'investment': totalInvestment,
-                'investmentWithCurrencyEffect': totalInvestmentWithCurrencyEffect,
-                'marketPrice': (float(ga(ga(marketSymbolMap, endDateString), ga(item, "symbol")))  or  1),
-                'marketPriceInBaseCurrency': (float(marketPriceInBaseCurrency)  or  1),
-                'netPerformance': ((netPerformance  or  None) if not hasErrors else None),
-                'netPerformancePercentage': ((netPerformancePercentage  or  None) if not hasErrors else None),
-                'netPerformancePercentageWithCurrencyEffectMap': ((netPerformancePercentageWithCurrencyEffectMap  or  None) if not hasErrors else None),
-                'netPerformanceWithCurrencyEffectMap': ((netPerformanceWithCurrencyEffectMap  or  None) if not hasErrors else None),
-                'quantity': ga(item, "quantity"),
-                'symbol': ga(item, "symbol"),
-                'tags': ga(item, "tags"),
-                'valueInBaseCurrency': (Decimal(str(marketPriceInBaseCurrency)) * ga(item, "quantity"))
-            })
-            totalInterestWithCurrencyEffect = (totalInterestWithCurrencyEffect + totalInterestInBaseCurrency)
-            totalLiabilitiesWithCurrencyEffect = (totalLiabilitiesWithCurrencyEffect + totalLiabilitiesInBaseCurrency)
-            if (((hasErrors  or  next((x for x in currentRateErrors if ((x.get('dataSource') == ga(item, "dataSource"))  and  (x.get('symbol') == ga(item, "symbol")))), None))  and  (ga(item, "investment") > 0))  and  (ga(item, "skipErrors") == False)):
-                errors.append({'dataSource': ga(item, "dataSource"), 'symbol': ga(item, "symbol")})
-
-        accountBalanceMap = {}
-        lastKnownBalance = Decimal(str(0))
-        for dateString in chartDates:
-            if (ga(accountBalanceItemsMap, dateString) != None):
-                lastKnownBalance = ga(accountBalanceItemsMap, dateString)
-
-            for symbol in list(valuesBySymbol.keys()):
-                symbolValues = ga(valuesBySymbol, symbol)
-                currentValue = (ga(ga(symbolValues, "currentValues"), dateString)  or  Decimal(str(0)))
-                currentValueWithCurrencyEffect = (ga(ga(symbolValues, "currentValuesWithCurrencyEffect"), dateString)  or  Decimal(str(0)))
-                investmentValueAccumulated = (ga(ga(symbolValues, "investmentValuesAccumulated"), dateString)  or  Decimal(str(0)))
-                investmentValueAccumulatedWithCurrencyEffect = (ga(ga(symbolValues, "investmentValuesAccumulatedWithCurrencyEffect"), dateString)  or  Decimal(str(0)))
-                investmentValueWithCurrencyEffect = (ga(ga(symbolValues, "investmentValuesWithCurrencyEffect"), dateString)  or  Decimal(str(0)))
-                netPerformanceValue = (ga(ga(symbolValues, "netPerformanceValues"), dateString)  or  Decimal(str(0)))
-                netPerformanceValueWithCurrencyEffect = (ga(ga(symbolValues, "netPerformanceValuesWithCurrencyEffect"), dateString)  or  Decimal(str(0)))
-                timeWeightedInvestmentValue = (ga(ga(symbolValues, "timeWeightedInvestmentValues"), dateString)  or  Decimal(str(0)))
-                timeWeightedInvestmentValueWithCurrencyEffect = (ga(ga(symbolValues, "timeWeightedInvestmentValuesWithCurrencyEffect"), dateString)  or  Decimal(str(0)))
-
-
-
-
-
-
-
-
-
-
-
-
-
-        overall = self.calculate_overall_performance(positions)
-        positionsIncludedInHoldings = [rest for x in [x for x in positions if x.get('includeInHoldings')]]
-        return {
-            **overall,
-            'errors': errors,
-            'historicalData': historicalData,
-            'totalInterestWithCurrencyEffect': totalInterestWithCurrencyEffect,
-            'totalLiabilitiesWithCurrencyEffect': totalLiabilitiesWithCurrencyEffect,
-            'hasErrors': (hasAnySymbolMetricsErrors  or  ga(overall, "hasErrors")),
-            'positions': positionsIncludedInHoldings
-        }
-
-
-
     def get_investments_by_group(self, data, groupBy):
         if not hasattr(self, 'snapshot_promise'):
             self.snapshot_promise = []
-            try: self.constructor()
-            except Exception: pass
+            self.constructor()
 
         groupedData = {}
         for _item in data:
@@ -797,34 +563,6 @@ class RoaiPortfolioCalculator(PortfolioCalculator):
             dateGroup = (date[0:7] if (groupBy == 'month') else date[0:4])
 
         return [{'date': (f"{x}-01" if (groupBy == 'month') else f"{x}-01-01"), 'investment': float(ga(groupedData, x))} for x in list(groupedData.keys())]
-
-
-
-    def get_snapshot(self):
-        self.snapshot_promise
-        return self.snapshot
-
-
-
-    def get_start_date(self):
-        firstAccountBalanceDate = None
-        firstActivityDate = None
-        try:
-            firstAccountBalanceDateString = self.account_balance_items[0].date
-            firstAccountBalanceDate = (parse_date(firstAccountBalanceDateString) if firstAccountBalanceDateString else datetime.now())
-        except Exception as error:
-            firstAccountBalanceDate = datetime.now()
-        try:
-            firstActivityDateString = self.transaction_points[0].date
-            firstActivityDate = (parse_date(firstActivityDateString) if firstActivityDateString else datetime.now())
-        except Exception as error:
-            firstActivityDate = datetime.now()
-        return date_min([firstAccountBalanceDate, firstActivityDate])
-
-
-
-    def get_transaction_points(self):
-        return self.transaction_points
 
 
 
@@ -900,8 +638,8 @@ class RoaiPortfolioCalculator(PortfolioCalculator):
                     else:
                         investment = (ga(oldAccumulatedSymbol, "investment") - (quantity * unitPrice))
                 if (abs(newQuantity) < float_info.epsilon):
-                    investment = Decimal(str(0))
-                    newQuantity = Decimal(str(0))
+                    investment = float(0)
+                    newQuantity = float(0)
                 currentTransactionPointItem = {
                     'assetSubClass': assetSubClass,
                     'currency': currency,
@@ -910,9 +648,9 @@ class RoaiPortfolioCalculator(PortfolioCalculator):
                     'skipErrors': skipErrors,
                     'symbol': symbol,
                     'activitiesCount': (ga(oldAccumulatedSymbol, "activitiesCount") + 1),
-                    'averagePrice': (Decimal(str(0)) if (newQuantity == 0) else abs((investment / newQuantity))),
+                    'averagePrice': (float(0) if (newQuantity == 0) else abs((investment / newQuantity))),
                     'dateOfFirstActivity': ga(oldAccumulatedSymbol, "dateOfFirstActivity"),
-                    'dividend': Decimal(str(0)),
+                    'dividend': float(0),
                     'fee': (ga(oldAccumulatedSymbol, "fee") + fee),
                     'feeInBaseCurrency': (ga(oldAccumulatedSymbol, "feeInBaseCurrency") + feeInBaseCurrency),
                     'includeInHoldings': ga(oldAccumulatedSymbol, "includeInHoldings"),
@@ -932,7 +670,7 @@ class RoaiPortfolioCalculator(PortfolioCalculator):
                     'activitiesCount': 1,
                     'averagePrice': unitPrice,
                     'dateOfFirstActivity': date,
-                    'dividend': Decimal(str(0)),
+                    'dividend': float(0),
                     'includeInHoldings': (type in ['BUY', 'DIVIDEND', 'SELL']),
                     'investment': ((unitPrice * quantity) * factor),
                     'quantity': (quantity * factor)
@@ -943,13 +681,13 @@ class RoaiPortfolioCalculator(PortfolioCalculator):
             newItems = [x for x in items if (x.get('symbol') != ga(SymbolProfile, "symbol"))]
             newItems.append(currentTransactionPointItem)
             sorted(newItems, key=functools.cmp_to_key(lambda a, b: ((ga(a, "symbol") > ga(b, "symbol")) - (ga(a, "symbol") < ga(b, "symbol")))))
-            fees = Decimal(str(0))
+            fees = float(0)
             if (type == 'FEE'):
                 fees = fee
-            interest = Decimal(str(0))
+            interest = float(0)
             if (type == 'INTEREST'):
                 interest = (quantity * unitPrice)
-            liabilities = Decimal(str(0))
+            liabilities = float(0)
             if (type == 'LIABILITY'):
                 liabilities = (quantity * unitPrice)
             if ((lastDate != date)  or  (lastTransactionPoint == None)):
@@ -968,55 +706,3 @@ class RoaiPortfolioCalculator(PortfolioCalculator):
 
 
             lastDate = date
-
-
-
-    def initialize(self):
-        if not hasattr(self, 'filters'):
-            self.filters = []
-            try: self.constructor()
-            except Exception: pass
-
-        if not hasattr(self, 'portfolio_snapshot_service'):
-            self.portfolio_snapshot_service = []
-            try: self.constructor()
-            except Exception: pass
-
-        if not hasattr(self, 'user_id'):
-            self.user_id = []
-            try: self.constructor()
-            except Exception: pass
-
-        startTimeTotal = time.now()
-        cachedPortfolioSnapshot = None
-        isCachedPortfolioSnapshotExpired = False
-        jobId = self.user_id
-        try:
-            cachedPortfolioSnapshotValue = self.redis_cache_service.get(self.redis_cache_service.get_portfolio_snapshot_key({'filters': self.filters, 'userId': self.user_id}))
-            expiration, portfolioSnapshot = JSON.parse(cachedPortfolioSnapshotValue)
-            cachedPortfolioSnapshot = plain_to_class(PortfolioSnapshot, portfolioSnapshot)
-            if is_after(datetime.now(), _parse_date(expiration)):
-                isCachedPortfolioSnapshotExpired = True
-        except Exception as e:
-            pass
-        if cachedPortfolioSnapshot:
-            self.snapshot = cachedPortfolioSnapshot
-            pass
-            if isCachedPortfolioSnapshotExpired:
-                self.portfolio_snapshot_service.add_job_to_queue({'data': {
-                    'calculationType': self.get_performance_calculation_type(),
-                    'filters': self.filters,
-                    'userCurrency': self.currency,
-                    'userId': self.user_id
-                }, 'name': name, 'opts': {**PORTFOLIO_SNAPSHOT_PROCESS_JOB_OPTIONS, 'jobId': jobId, 'priority': priority}})
-        else:
-            self.portfolio_snapshot_service.add_job_to_queue({'data': {
-                'calculationType': self.get_performance_calculation_type(),
-                'filters': self.filters,
-                'userCurrency': self.currency,
-                'userId': self.user_id
-            }, 'name': name, 'opts': {**PORTFOLIO_SNAPSHOT_PROCESS_JOB_OPTIONS, 'jobId': jobId, 'priority': priority}})
-            job = self.portfolio_snapshot_service.get_job(jobId)
-            if job:
-                job.finished()
-            self.initialize()
