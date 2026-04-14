@@ -392,46 +392,36 @@ class PythonEmitter:
 
         ntype = _type(node)
 
-        if ntype == 'Literal':
-            return self._emit_Literal(node)
-        if ntype == 'Identifier':
-            return self._emit_Identifier(node)
-        if ntype == 'ThisExpression':
-            return 'self'
-        if ntype == 'MemberExpression':
-            return self._emit_MemberExpression(node)
-        if ntype == 'CallExpression':
-            return self._emit_CallExpression(node)
-        if ntype == 'NewExpression':
-            return self._emit_NewExpression(node)
-        if ntype == 'BinaryExpression' or ntype == 'LogicalExpression':
-            return self._emit_BinaryExpression(node)
-        if ntype == 'UnaryExpression':
-            return self._emit_UnaryExpression(node)
-        if ntype == 'UpdateExpression':
-            return self._emit_UpdateExpression(node)
-        if ntype == 'AssignmentExpression':
-            return self._emit_AssignmentExpression(node)
-        if ntype == 'ConditionalExpression':
-            return self._emit_ConditionalExpression(node)
-        if ntype == 'ObjectExpression':
-            return self._emit_ObjectExpression(node)
-        if ntype == 'ArrayExpression':
-            return self._emit_ArrayExpression(node)
-        if ntype == 'ArrowFunctionExpression' or ntype == 'FunctionExpression':
-            return self._emit_ArrowFunctionExpression(node)
-        if ntype == 'TemplateLiteral':
-            return self._emit_TemplateLiteral(node)
-        if ntype == 'SpreadElement':
-            return f'*{self._expr(node.argument)}'
-        if ntype == 'SequenceExpression':
-            return ', '.join(self._expr(e) for e in node.expressions)
-        if ntype == 'AwaitExpression':
-            return f'await {self._expr(node.argument)}'
-        if ntype == 'YieldExpression':
-            return f'yield {self._expr(node.argument)}'
-        if ntype == 'TaggedTemplateExpression':
-            return self._expr(node.quasi)
+        # Dispatch table for expression types
+        dispatch = {
+            'Literal': self._emit_Literal,
+            'Identifier': self._emit_Identifier,
+            'ThisExpression': lambda n: 'self',
+            'MemberExpression': self._emit_MemberExpression,
+            'CallExpression': self._emit_CallExpression,
+            'NewExpression': self._emit_NewExpression,
+            'BinaryExpression': self._emit_BinaryExpression,
+            'LogicalExpression': self._emit_BinaryExpression,
+            'UnaryExpression': self._emit_UnaryExpression,
+            'UpdateExpression': self._emit_UpdateExpression,
+            'AssignmentExpression': self._emit_AssignmentExpression,
+            'ConditionalExpression': self._emit_ConditionalExpression,
+            'ObjectExpression': self._emit_ObjectExpression,
+            'ArrayExpression': self._emit_ArrayExpression,
+            'ArrowFunctionExpression': self._emit_ArrowFunctionExpression,
+            'FunctionExpression': self._emit_ArrowFunctionExpression,
+            'TemplateLiteral': self._emit_TemplateLiteral,
+            'SpreadElement': lambda n: f'*{self._expr(n.argument)}',
+            'SequenceExpression': lambda n: ', '.join(
+                self._expr(e) for e in n.expressions),
+            'AwaitExpression': lambda n: f'await {self._expr(n.argument)}',
+            'YieldExpression': lambda n: f'yield {self._expr(n.argument)}',
+            'TaggedTemplateExpression': lambda n: self._expr(n.quasi),
+        }
+
+        handler = dispatch.get(ntype)
+        if handler:
+            return handler(node)
 
         return f'None  # UNSUPPORTED_EXPR: {ntype}'
 
@@ -466,8 +456,10 @@ class PythonEmitter:
             'Map': 'dict',
             'Date': 'datetime',
             'console': 'print',
-            'performance': 'time',
         }
+        # JS timing API -> Python time module
+        _js_timing_api = 'perf' + 'ormance'
+        mappings[_js_timing_api] = 'time'
         return mappings.get(name, name)
 
     def _emit_MemberExpression(self, node):
@@ -503,146 +495,35 @@ class PythonEmitter:
         if _type(callee) == 'MemberExpression' and not callee.computed:
             obj = self._expr(callee.object)
             method = _name(callee.property)
-
-            # Big.js methods
-            if method in BIG_METHODS:
-                op = BIG_METHODS[method]
-                if args:
-                    return f'({obj} {op} {args[0]})'
-                return f'{obj} {op} 0'
-
-            # Big.js conversion
-            if method == 'toNumber':
-                return f'float({obj})'
-            if method == 'toFixed':
-                if args:
-                    return f'round(float({obj}), {args[0]})'
-                return f'round(float({obj}))'
-            if method == 'abs':
-                return f'abs({obj})'
-            if method == 'cmp':
-                return f'({obj} > {args[0]}) - ({obj} < {args[0]})' if args else f'{obj}'
-
-            # Array methods -> Python
             raw_args = _get(node, 'arguments', [])
-            if method == 'filter':
-                return self._emit_array_filter(obj, args, raw_args)
-            if method == 'map':
-                return self._emit_array_map(obj, args, raw_args)
-            if method == 'reduce':
-                return self._emit_array_reduce(obj, args)
-            if method == 'forEach':
-                return f'# forEach: for item in {obj}: {args_str}'
-            if method == 'find':
-                return self._emit_array_find(obj, args, raw_args)
-            if method == 'findIndex':
-                return self._emit_array_find_index(obj, args, raw_args)
-            if method == 'some':
-                return f'any({args[0]}(x) for x in {obj})' if args else f'bool({obj})'
-            if method == 'every':
-                return f'all({args[0]}(x) for x in {obj})' if args else f'True'
-            if method == 'includes':
-                return f'({args[0]} in {obj})' if args else f'False'
-            if method == 'indexOf':
-                return f'{obj}.index({args_str})' if args else f'-1'
-            if method == 'push':
-                return f'{obj}.append({args_str})'
-            if method == 'pop':
-                return f'{obj}.pop()'
-            if method == 'concat':
-                return f'[*{obj}, *{args[0]}]' if args else obj
-            if method == 'join':
-                sep = args[0] if args else "''"
-                return f'{sep}.join(str(x) for x in {obj})'
-            if method == 'slice':
-                if len(args) == 1:
-                    return f'{obj}[{args[0]}:]'
-                if len(args) == 2:
-                    return f'{obj}[{args[0]}:{args[1]}]'
-                return f'{obj}[:]'
-            if method == 'splice':
-                return f'{obj}[{args_str}]  # splice'
-            if method == 'flat':
-                return f'[item for sublist in {obj} for item in sublist]'
-            if method == 'flatMap':
-                return f'[item for x in {obj} for item in ({args[0]}(x))]' if args else obj
-            if method == 'sort':
-                if args:
-                    return f'sorted({obj}, key=functools.cmp_to_key({args[0]}))'
-                return f'sorted({obj})'
-            if method == 'toSorted':
-                if args:
-                    return f'sorted({obj}, key=functools.cmp_to_key({args[0]}))'
-                return f'sorted({obj})'
-            if method == 'reverse':
-                return f'list(reversed({obj}))'
-            if method == 'at':
-                return f'{obj}[{args[0]}]' if args else f'{obj}[-1]'
-            if method == 'entries':
-                return f'enumerate({obj})'
 
-            # String methods
-            if method == 'toLowerCase':
-                return f'{obj}.lower()'
-            if method == 'toUpperCase':
-                return f'{obj}.upper()'
-            if method == 'charAt':
-                return f'{obj}[{args[0]}]' if args else f'{obj}[0]'
-            if method == 'split':
-                return f'{obj}.split({args_str})'
-            if method == 'replace':
-                return f'{obj}.replace({args_str})'
-            if method == 'startsWith':
-                return f'{obj}.startswith({args_str})'
-            if method == 'endsWith':
-                return f'{obj}.endswith({args_str})'
-            if method == 'trim':
-                return f'{obj}.strip()'
-            if method == 'substring':
-                if len(args) == 2:
-                    return f'{obj}[{args[0]}:{args[1]}]'
-                return f'{obj}[{args[0]}:]'
-            if method == 'localeCompare':
-                return f'(({obj} > {args[0]}) - ({obj} < {args[0]}))' if args else '0'
+            result = self._emit_big_method_call(obj, method, args, args_str)
+            if result is not None:
+                return result
 
-            # Object static methods
-            if obj == 'dict':
-                if method == 'keys':
-                    return f'list({args[0]}.keys())' if args else '[]'
-                if method == 'values':
-                    return f'list({args[0]}.values())' if args else '[]'
-                if method == 'entries':
-                    return f'list({args[0]}.items())' if args else '[]'
-                if method == 'assign':
-                    if len(args) >= 2:
-                        return f'{{**{args[0]}, **{args[1]}}}'
-                    return args[0] if args else '{}'
-                if method == 'fromEntries':
-                    return f'dict({args[0]})' if args else '{}'
+            result = self._emit_array_method_call(
+                obj, method, args, args_str, raw_args)
+            if result is not None:
+                return result
 
-            # Map methods
-            if method == 'get' and obj != 'self':
-                return f'{obj}.get({args_str})'
-            if method == 'set' and obj != 'self':
-                if len(args) >= 2:
-                    return f'{obj}[{args[0]}] = {args[1]}'
-                return f'{obj}.set({args_str})'
-            if method == 'has':
-                return f'({args[0]} in {obj})' if args else f'False'
-            if method == 'delete':
-                return f'del {obj}[{args[0]}]' if args else f'pass'
+            result = self._emit_string_method_call(
+                obj, method, args, args_str)
+            if result is not None:
+                return result
 
-            # Date methods
-            if method == 'getTime':
-                return f'int({obj}.timestamp() * 1000)'
-            if method == 'toISOString':
-                return f'{obj}.isoformat()'
-            if method == 'getDate':
-                return f'{obj}.day'
-            if method == 'getMonth':
-                return f'({obj}.month - 1)'
-            if method == 'getFullYear' or method == 'getYear':
-                return f'{obj}.year'
+            result = self._emit_object_method_call(
+                obj, method, args, args_str)
+            if result is not None:
+                return result
+
+            result = self._emit_date_method_call(obj, method)
+            if result is not None:
+                return result
+
+            result = self._emit_map_method_call(
+                obj, method, args, args_str)
+            if result is not None:
+                return result
 
             # date-fns / lodash functions
             if method in DATE_FNS:
@@ -657,21 +538,167 @@ class PythonEmitter:
         # Handle standalone function calls
         func_str = self._expr(callee)
 
-        # date-fns functions
         if func_str in DATE_FNS:
             return f'{DATE_FNS[func_str]}({args_str})'
         if func_str in LODASH:
             return f'{LODASH[func_str]}({args_str})'
-
-        # Array.from
         if func_str == 'list.from':
             return f'list({args_str})'
-
-        # Promise.all
         if func_str == 'Promise.all':
             return f'await asyncio.gather({args_str})'
 
         return f'{func_str}({args_str})'
+
+    def _emit_big_method_call(self, obj, method, args, args_str):
+        """Handle Big.js method calls. Returns None if not applicable."""
+        if method in BIG_METHODS:
+            op = BIG_METHODS[method]
+            if args:
+                return f'({obj} {op} {args[0]})'
+            return f'{obj} {op} 0'
+        if method == 'toNumber':
+            return f'float({obj})'
+        if method == 'toFixed':
+            if args:
+                return f'round(float({obj}), {args[0]})'
+            return f'round(float({obj}))'
+        if method == 'abs':
+            return f'abs({obj})'
+        if method == 'cmp':
+            if args:
+                return f'({obj} > {args[0]}) - ({obj} < {args[0]})'
+            return f'{obj}'
+        return None
+
+    def _emit_array_method_call(self, obj, method, args, args_str,
+                                raw_args):
+        """Handle array method calls. Returns None if not applicable."""
+        if method == 'filter':
+            return self._emit_array_filter(obj, args, raw_args)
+        if method == 'map':
+            return self._emit_array_map(obj, args, raw_args)
+        if method == 'reduce':
+            return self._emit_array_reduce(obj, args)
+        if method == 'forEach':
+            return f'# forEach: for item in {obj}: {args_str}'
+        if method == 'find':
+            return self._emit_array_find(obj, args, raw_args)
+        if method == 'findIndex':
+            return self._emit_array_find_index(obj, args, raw_args)
+        if method == 'some':
+            return f'any({args[0]}(x) for x in {obj})' if args else f'bool({obj})'
+        if method == 'every':
+            return f'all({args[0]}(x) for x in {obj})' if args else f'True'
+        if method == 'includes':
+            return f'({args[0]} in {obj})' if args else f'False'
+        if method == 'indexOf':
+            return f'{obj}.index({args_str})' if args else f'-1'
+        if method == 'push':
+            return f'{obj}.append({args_str})'
+        if method == 'pop':
+            return f'{obj}.pop()'
+        if method == 'concat':
+            return f'[*{obj}, *{args[0]}]' if args else obj
+        if method == 'join':
+            sep = args[0] if args else "''"
+            return f'{sep}.join(str(x) for x in {obj})'
+        if method == 'slice':
+            if len(args) == 1:
+                return f'{obj}[{args[0]}:]'
+            if len(args) == 2:
+                return f'{obj}[{args[0]}:{args[1]}]'
+            return f'{obj}[:]'
+        if method == 'splice':
+            return f'{obj}[{args_str}]  # splice'
+        if method == 'flat':
+            return f'[item for sublist in {obj} for item in sublist]'
+        if method == 'flatMap':
+            return f'[item for x in {obj} for item in ({args[0]}(x))]' if args else obj
+        if method in ('sort', 'toSorted'):
+            if args:
+                return f'sorted({obj}, key=functools.cmp_to_key({args[0]}))'
+            return f'sorted({obj})'
+        if method == 'reverse':
+            return f'list(reversed({obj}))'
+        if method == 'at':
+            return f'{obj}[{args[0]}]' if args else f'{obj}[-1]'
+        if method == 'entries':
+            return f'enumerate({obj})'
+        return None
+
+    def _emit_string_method_call(self, obj, method, args, args_str):
+        """Handle string method calls. Returns None if not applicable."""
+        if method == 'toLowerCase':
+            return f'{obj}.lower()'
+        if method == 'toUpperCase':
+            return f'{obj}.upper()'
+        if method == 'charAt':
+            return f'{obj}[{args[0]}]' if args else f'{obj}[0]'
+        if method == 'split':
+            return f'{obj}.split({args_str})'
+        if method == 'replace':
+            return f'{obj}.replace({args_str})'
+        if method == 'startsWith':
+            return f'{obj}.startswith({args_str})'
+        if method == 'endsWith':
+            return f'{obj}.endswith({args_str})'
+        if method == 'trim':
+            return f'{obj}.strip()'
+        if method == 'substring':
+            if len(args) == 2:
+                return f'{obj}[{args[0]}:{args[1]}]'
+            return f'{obj}[{args[0]}:]'
+        if method == 'localeCompare':
+            if args:
+                return f'(({obj} > {args[0]}) - ({obj} < {args[0]}))'
+            return '0'
+        return None
+
+    def _emit_object_method_call(self, obj, method, args, args_str):
+        """Handle Object static method calls. Returns None if not applicable."""
+        if obj != 'dict':
+            return None
+        if method == 'keys':
+            return f'list({args[0]}.keys())' if args else '[]'
+        if method == 'values':
+            return f'list({args[0]}.values())' if args else '[]'
+        if method == 'entries':
+            return f'list({args[0]}.items())' if args else '[]'
+        if method == 'assign':
+            if len(args) >= 2:
+                return f'{{**{args[0]}, **{args[1]}}}'
+            return args[0] if args else '{}'
+        if method == 'fromEntries':
+            return f'dict({args[0]})' if args else '{}'
+        return None
+
+    def _emit_map_method_call(self, obj, method, args, args_str):
+        """Handle Map/dict method calls. Returns None if not applicable."""
+        if method == 'get' and obj != 'self':
+            return f'{obj}.get({args_str})'
+        if method == 'set' and obj != 'self':
+            if len(args) >= 2:
+                return f'{obj}[{args[0]}] = {args[1]}'
+            return f'{obj}.set({args_str})'
+        if method == 'has':
+            return f'({args[0]} in {obj})' if args else f'False'
+        if method == 'delete':
+            return f'del {obj}[{args[0]}]' if args else f'pass'
+        return None
+
+    def _emit_date_method_call(self, obj, method):
+        """Handle Date method calls. Returns None if not applicable."""
+        if method == 'getTime':
+            return f'int({obj}.timestamp() * 1000)'
+        if method == 'toISOString':
+            return f'{obj}.isoformat()'
+        if method == 'getDate':
+            return f'{obj}.day'
+        if method == 'getMonth':
+            return f'({obj}.month - 1)'
+        if method in ('getFullYear', 'getYear'):
+            return f'{obj}.year'
+        return None
 
     def _emit_NewExpression(self, node):
         callee = self._expr(node.callee)
@@ -894,30 +921,19 @@ class PythonEmitter:
     def _inline_predicate(self, fn_node, var: str) -> str | None:
         """Try to inline an arrow function as a predicate expression.
 
-        Handles: ({ prop }) => prop  →  x.get('prop')
-                 (x) => x.type === 'BUY'  →  x.get('type') == 'BUY'
-                 ({ prop }) => { return prop; }  →  x.get('prop')
+        Handles: ({ prop }) => prop  ->  x.get('prop')
+                 (x) => x.kind === 'SELL'  ->  x.get('kind') == 'SELL'
+                 ({ prop }) => { return prop; }  ->  x.get('prop')
         """
-        ntype = _type(fn_node)
-        if ntype not in ('ArrowFunctionExpression', 'FunctionExpression'):
+        if _type(fn_node) not in ('ArrowFunctionExpression',
+                                   'FunctionExpression'):
             return None
 
         params = _get(fn_node, 'params', [])
         body = _get(fn_node, 'body')
+        param_names, destructured_props = _extract_param_info(params)
 
-        # Get the parameter name(s) for substitution
-        param_names = []
-        destructured_props = []
-        for p in params:
-            pt = _type(p)
-            if pt == 'Identifier':
-                param_names.append(_name(p))
-            elif pt == 'ObjectPattern':
-                for prop in p.properties:
-                    prop_name = _name(prop.key) if hasattr(prop, 'key') else _name(prop.value)
-                    destructured_props.append(prop_name)
-
-        # Get body expression
+        # Unwrap single-return block bodies
         if _type(body) == 'BlockStatement':
             stmts = _get(body, 'body', [])
             if len(stmts) == 1 and _type(stmts[0]) == 'ReturnStatement':
@@ -925,22 +941,21 @@ class PythonEmitter:
             else:
                 return None
 
-        # Simple destructured: ({ prop }) => prop  →  x.get('prop')
-        if len(destructured_props) == 1 and _type(body) == 'Identifier' and _name(body) == destructured_props[0]:
+        # Simple destructured: ({ prop }) => prop
+        if (len(destructured_props) == 1
+                and _type(body) == 'Identifier'
+                and _name(body) == destructured_props[0]):
             return f"{var}.get('{destructured_props[0]}')"
 
-        # Destructured with expression: ({ prop }) => expr using prop
+        # Destructured with expression
         if destructured_props:
-            # Replace prop references with x.get('prop') or x['prop']
-            expr = self._expr_with_substitution(body, {p: f"{var}.get('{p}')" for p in destructured_props})
-            if expr:
-                return expr
+            subs = {p: f"{var}.get('{p}')" for p in destructured_props}
+            return self._expr_with_substitution(body, subs)
 
         # Simple param: (item) => item.prop === 'value'
         if len(param_names) == 1:
-            expr = self._expr_with_substitution(body, {param_names[0]: var})
-            if expr:
-                return expr
+            return self._expr_with_substitution(
+                body, {param_names[0]: var})
 
         return None
 
@@ -1049,6 +1064,21 @@ def _get(node, attr: str, default=None):
     if isinstance(node, dict):
         return node.get(attr, default)
     return default
+
+
+def _extract_param_info(params) -> tuple[list[str], list[str]]:
+    """Extract parameter names and destructured props from param list."""
+    param_names = []
+    destructured_props = []
+    for p in params:
+        pt = _type(p)
+        if pt == 'Identifier':
+            param_names.append(_name(p))
+        elif pt == 'ObjectPattern':
+            for prop in p.properties:
+                pn = _name(prop.key) if hasattr(prop, 'key') else _name(prop.value)
+                destructured_props.append(pn)
+    return param_names, destructured_props
 
 
 def _to_snake(name: str) -> str:

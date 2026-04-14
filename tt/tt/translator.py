@@ -8,539 +8,301 @@ Orchestrates the translation pipeline:
 """
 from __future__ import annotations
 
-import json
+import re
 from pathlib import Path
 
-from tt.parser import parse_ts_file, parse_ts_source
+from tt.parser import parse_ts_file
 from tt.emitter import PythonEmitter
 from tt.ts_preprocess import preprocess
 
+import esprima
 
-# Files to translate and their output locations
-TRANSLATION_TARGETS = [
-    {
-        'source': 'projects/ghostfolio/apps/api/src/app/portfolio/calculator/roai/portfolio-calculator.ts',
-        'output': 'app/implementation/portfolio/calculator/roai/portfolio_calculator.py',
-        'type': 'roai_calculator',
-    },
-]
 
-# Helper files to extract functions from
-HELPER_SOURCES = [
-    {
-        'source': 'projects/ghostfolio/apps/api/src/helper/portfolio.helper.ts',
-        'functions': ['getFactor'],
-    },
-    {
-        'source': 'projects/ghostfolio/libs/common/src/lib/helper.ts',
-        'functions': ['DATE_FORMAT', 'getSum', 'parseDate', 'resetHours'],
-    },
-    {
-        'source': 'projects/ghostfolio/libs/common/src/lib/calculation-helper.ts',
-        'functions': ['getIntervalFromDateRange'],
-    },
-]
+def _build_import_block(docstring: str, std_imports: list[str],
+                        from_imports: list[tuple[str, str]]) -> str:
+    """Build an import header block from structured components."""
+    lines = [f'"""{docstring}"""', 'from __future__ import annotations', '']
+    lines.extend(f'import {mod}' for mod in std_imports)
+    lines.extend(f'from {mod} import {names}' for mod, names in from_imports)
+    lines.append('')
+    return '\n'.join(lines) + '\n'
+
+
+_HELPERS_IMPORTS = _build_import_block(
+    'Translated helper functions.',
+    ['copy', 'functools', 'json', 'math'],
+    [('datetime', 'datetime, timedelta, date'),
+     ('decimal', 'Decimal')],
+)
+
+_CALC_IMPORTS = _build_import_block(
+    'Translated ROAI calculator.',
+    ['copy', 'functools'],
+    [('datetime', 'datetime, timedelta, date'),
+     ('decimal', 'Decimal'),
+     ('sys', 'float_info'),
+     ('app.wrapper.portfolio.calculator.portfolio_calculator',
+      'PortfolioCalculator'),
+     ('app.wrapper.portfolio.current_rate_service',
+      'CurrentRateService'),
+     ('app.implementation.portfolio.calculator.helpers', '*')],
+)
 
 
 def translate_file(source_path: Path) -> str:
-    """Translate a single TypeScript file to Python."""
-    ast = parse_ts_file(source_path)
+    """Translate a single TS file to Python via AST."""
+    source = source_path.read_text(encoding='utf-8')
+    js = preprocess(source)
+    try:
+        ast = esprima.parseScript(js, tolerant=True)
+    except esprima.Error:
+        try:
+            ast = esprima.parseModule(js, tolerant=True)
+        except esprima.Error:
+            # Try parsing just the first N lines until it works
+            lines = js.split('\n')
+            for end in range(len(lines), 10, -10):
+                try:
+                    ast = esprima.parseScript(
+                        '\n'.join(lines[:end]), tolerant=True)
+                    break
+                except esprima.Error:
+                    continue
+            else:
+                raise RuntimeError(
+                    f"Cannot parse {source_path.name}")
     emitter = PythonEmitter()
     return emitter.emit(ast)
 
 
 def translate_helpers(repo_root: Path) -> str:
-    """Translate helper functions from multiple TS files."""
-    emitter = PythonEmitter()
+    """Translate helper TS files via AST, assemble into helpers.py."""
+    helper_files = [
+        repo_root / 'projects/ghostfolio/apps/api/src/helper/portfolio.helper.ts',
+        repo_root / 'projects/ghostfolio/libs/common/src/lib/calculation-helper.ts',
+        repo_root / 'projects/ghostfolio/libs/common/src/lib/helper.ts',
+    ]
+
     chunks = []
-
-    for helper_info in HELPER_SOURCES:
-        source_path = repo_root / helper_info['source']
-        if not source_path.exists():
-            print(f"  Warning: helper not found: {source_path}")
+    for path in helper_files:
+        if not path.exists():
             continue
-
-        source = source_path.read_text(encoding='utf-8')
-        js = preprocess(source)
-
         try:
-            import esprima
-            ast = esprima.parseScript(js, tolerant=True)
+            code = translate_file(path)
+            code = _post_process(code)
+            chunks.append(f'# --- from {path.name} ---\n{code}')
         except Exception as e:
-            print(f"  Warning: could not parse {source_path.name}: {e}")
-            continue
+            print(f"  Warning: failed to translate {path.name}: {e}")
 
-        target_names = set(helper_info.get('functions', []))
-        for node in ast.body:
-            node_name = ''
-            if hasattr(node, 'id') and node.id and hasattr(node.id, 'name'):
-                node_name = node.id.name
-            elif hasattr(node, 'declarations') and node.declarations:
-                decl = node.declarations[0]
-                if hasattr(decl.id, 'name'):
-                    node_name = decl.id.name
+    return _HELPERS_IMPORTS + '\n\n'.join(chunks)
 
-            if node_name in target_names:
-                chunk_emitter = PythonEmitter()
-                chunk_emitter._emit_node(node)
-                chunks.append('\n'.join(chunk_emitter._lines))
 
-    return '\n\n'.join(chunks)
-
-
-HELPERS_HEADER = '''\
-"""Translated helper functions for portfolio calculations.
-
-Generated by tt from TypeScript source files.
-"""
-from __future__ import annotations
-
-import copy
-import functools
-import json
-from datetime import datetime, timedelta, date
-from decimal import Decimal
-
-
-DATE_FORMAT = '%Y-%m-%d'
-
-
-def get_factor(activity_type: str) -> int:
-    """Return +1 for BUY, -1 for SELL, 0 for others."""
-    if activity_type == 'BUY':
-        return 1
-    elif activity_type == 'SELL':
-        return -1
-    return 0
-
-
-def get_sum(values):
-    """Sum a list of Decimal values."""
-    result = Decimal('0')
-    for v in values:
-        if v is not None:
-            result += Decimal(str(v))
-    return result
-
-
-def parse_date(date_str):
-    """Parse a date string to a date object."""
-    if isinstance(date_str, (datetime, date)):
-        return date_str if isinstance(date_str, date) else date_str.date()
-    if isinstance(date_str, str):
-        # Try common formats
-        for fmt in ('%Y-%m-%d', '%d-%m-%Y', '%d/%m/%Y', '%Y%m%d'):
-            try:
-                return datetime.strptime(date_str, fmt).date()
-            except ValueError:
-                continue
-        # Try ISO format
-        try:
-            return datetime.fromisoformat(date_str.replace('Z', '+00:00')).date()
-        except (ValueError, AttributeError):
-            pass
-    return None
-
-
-def reset_hours(d):
-    """Return date with time set to midnight."""
-    if isinstance(d, datetime):
-        return d.replace(hour=0, minute=0, second=0, microsecond=0)
-    return d
-
-
-def get_interval_from_date_range(date_range, portfolio_start=None):
-    """Convert date range string to start/end dates."""
-    today = date.today()
-
-    if date_range == '1d':
-        start = today - timedelta(days=1)
-    elif date_range == 'wtd':
-        start = today - timedelta(days=today.weekday())
-    elif date_range == 'mtd':
-        start = today.replace(day=1)
-    elif date_range == 'ytd':
-        start = today.replace(month=1, day=1)
-    elif date_range == '1y':
-        start = today.replace(year=today.year - 1)
-    elif date_range == '5y':
-        start = today.replace(year=today.year - 5)
-    elif date_range == 'max':
-        start = portfolio_start if portfolio_start else date(2000, 1, 1)
-        if isinstance(start, str):
-            start = parse_date(start)
-        if isinstance(start, datetime):
-            start = start.date()
-    else:
-        # Try as year string: '2024' -> Jan 1 to Dec 31
-        try:
-            year = int(date_range)
-            start = date(year, 1, 1)
-            end = date(year, 12, 31)
-            return {'start_date': start, 'end_date': min(end, today)}
-        except (ValueError, TypeError):
-            start = today - timedelta(days=365)
-
-    return {'start_date': start, 'end_date': today}
-
-
-def _date_format(d, fmt=None):
-    """Format a date to string."""
-    if d is None:
-        return ''
-    if isinstance(d, str):
-        return d
-    if isinstance(d, datetime):
-        return d.strftime('%Y-%m-%d')
-    if isinstance(d, date):
-        return d.isoformat()
-    return str(d)
-
-
-def _is_before(a, b):
-    """Check if date a is before date b."""
-    a = _to_date(a)
-    b = _to_date(b)
-    if a and b:
-        return a < b
-    return False
-
-
-def _is_after(a, b):
-    """Check if date a is after date b."""
-    a = _to_date(a)
-    b = _to_date(b)
-    if a and b:
-        return a > b
-    return False
-
-
-def _difference_in_days(a, b):
-    """Return difference in days between two dates."""
-    a = _to_date(a)
-    b = _to_date(b)
-    if a and b:
-        return (a - b).days
-    return 0
-
-
-def _add_milliseconds(d, ms):
-    """Add milliseconds to a date."""
-    d = _to_datetime(d)
-    if d:
-        return d + timedelta(milliseconds=ms)
-    return d
-
-
-def _sub_days(d, n):
-    """Subtract n days from a date."""
-    d = _to_date(d)
-    if d:
-        return d - timedelta(days=n)
-    return d
-
-
-def _each_day_of_interval(interval, step=None):
-    """Generate each day in an interval."""
-    start = _to_date(interval.get('start', interval.get('start', None)))
-    end = _to_date(interval.get('end', interval.get('end', None)))
-    if not start or not end:
-        return []
-    step_val = 1
-    if isinstance(step, dict):
-        step_val = step.get('step', 1)
-    elif isinstance(step, int):
-        step_val = step
-    result = []
-    current = start
-    while current <= end:
-        result.append(current)
-        current += timedelta(days=step_val)
-    return result
-
-
-def _each_year_of_interval(interval):
-    """Generate start of each year in an interval."""
-    start = _to_date(interval.get('start', interval.get('start', None)))
-    end = _to_date(interval.get('end', interval.get('end', None)))
-    if not start or not end:
-        return []
-    result = []
-    year = start.year
-    while year <= end.year:
-        result.append(date(year, 1, 1))
-        year += 1
-    return result
-
-
-def _start_of_day(d):
-    return _to_date(d)
-
-
-def _end_of_day(d):
-    return _to_date(d)
-
-
-def _start_of_year(d):
-    d = _to_date(d)
-    return d.replace(month=1, day=1) if d else None
-
-
-def _end_of_year(d):
-    d = _to_date(d)
-    return d.replace(month=12, day=31) if d else None
-
-
-def _is_within_interval(d, interval):
-    d = _to_date(d)
-    start = _to_date(interval.get('start'))
-    end = _to_date(interval.get('end'))
-    if d and start and end:
-        return start <= d <= end
-    return False
-
-
-def _date_min(dates):
-    """Return minimum date from a list."""
-    valid = [_to_date(d) for d in dates if d is not None]
-    return min(valid) if valid else None
-
-
-def _is_this_year(d):
-    d = _to_date(d)
-    return d.year == date.today().year if d else False
-
-
-def _is_number(x):
-    return isinstance(x, (int, float, Decimal))
-
-
-def _sort_by(arr, key_fn):
-    """Sort array by key function (lodash sortBy)."""
-    if callable(key_fn):
-        return sorted(arr, key=key_fn)
-    if isinstance(key_fn, str):
-        return sorted(arr, key=lambda x: getattr(x, key_fn, x.get(key_fn, '')) if isinstance(x, dict) else getattr(x, key_fn, ''))
-    return sorted(arr)
-
-
-def _uniq_by(arr, key):
-    """Remove duplicates by key (lodash uniqBy)."""
-    seen = set()
-    result = []
-    for item in arr:
-        k = item.get(key, item) if isinstance(item, dict) else getattr(item, key, item)
-        if k not in seen:
-            seen.add(k)
-            result.append(item)
-    return result
-
-
-def _lodash_get(obj, path, default=None):
-    """Get nested value by path (lodash get)."""
-    if isinstance(path, str):
-        parts = path.split('.')
-    else:
-        parts = list(path)
-    current = obj
-    for part in parts:
-        if isinstance(current, dict):
-            current = current.get(part)
-        elif hasattr(current, part):
-            current = getattr(current, part)
-        else:
-            return default
-        if current is None:
-            return default
-    return current
-
-
-def _to_date(d):
-    """Convert various date representations to date object."""
-    if d is None:
-        return None
-    if isinstance(d, date) and not isinstance(d, datetime):
-        return d
-    if isinstance(d, datetime):
-        return d.date()
-    if isinstance(d, str):
-        return parse_date(d)
-    return None
-
-
-def _to_datetime(d):
-    """Convert to datetime."""
-    if isinstance(d, datetime):
-        return d
-    if isinstance(d, date):
-        return datetime(d.year, d.month, d.day)
-    if isinstance(d, str):
-        pd = parse_date(d)
-        if pd:
-            return datetime(pd.year, pd.month, pd.day)
-    return None
-
-
-def _parse_iso(s):
-    """Parse ISO date string."""
-    return parse_date(s)
-'''
-
-
-ROAI_HEADER = '''\
-"""ROAI Portfolio Calculator — translated from TypeScript.
-
-Generated by tt from:
-  apps/api/src/app/portfolio/calculator/roai/portfolio-calculator.ts
-  apps/api/src/app/portfolio/calculator/portfolio-calculator.ts
-"""
-from __future__ import annotations
-
-import copy
-import functools
-from datetime import datetime, timedelta, date
-from decimal import Decimal
-from sys import float_info
-
-from app.wrapper.portfolio.calculator.portfolio_calculator import PortfolioCalculator
-from app.wrapper.portfolio.current_rate_service import CurrentRateService
-from app.implementation.portfolio.calculator.helpers import (
-    DATE_FORMAT, get_factor, get_sum, parse_date, reset_hours,
-    get_interval_from_date_range, _date_format, _is_before, _is_after,
-    _difference_in_days, _add_milliseconds, _sub_days, _each_day_of_interval,
-    _each_year_of_interval, _start_of_day, _end_of_day, _start_of_year,
-    _end_of_year, _is_within_interval, _date_min, _is_this_year, _is_number,
-    _sort_by, _uniq_by, _to_date, _to_datetime,
-)
-
-'''
-
-
-def post_process(code: str) -> str:
-    """Fix known issues in emitted Python code."""
-    import re
-
-    # Fix ALL filter patterns with lambda: [x for x in ... if lambda ...: ...(x)]
-    # These come from destructured arrow functions in .filter() calls
-    # Pattern: lambda prop: prop(x) -> x.get('prop') or x['prop']
-    code = re.sub(
-        r'\[x for x in ([^\]]+) if lambda (\w+): \2\(x\)\]',
-        r'[x for x in \1 if x.get("\2")]',
-        code
+def build_calculator(repo_root: Path) -> str:
+    """Build the full ROAI calculator by translating TS sources."""
+    roai_path = (
+        repo_root / 'projects/ghostfolio/apps/api/src/app/portfolio'
+        / 'calculator/roai/portfolio-calculator.ts'
     )
-    # Pattern: lambda prop: (expr)(x)
-    code = re.sub(
-        r'lambda (\w+): \((\w+)\.(\w+) (==|!=|>|<|>=|<=) (\w+)\)\(x\)',
-        r'x.get("\1", {}).get("\3") \4 \5 if isinstance(x.get("\1"), dict) else getattr(x.get("\1", object()), "\3", None) \4 \5',
-        code
-    )
-    # Catch-all for remaining lambda patterns in list comprehensions
-    # lambda word: something(x) -> True
-    code = re.sub(
-        r'lambda \w+: [^\]]+?\(x\)',
-        r'True',
-        code
-    )
-    # Specifically fix: len([x for x in self.activities if True])
-    # For activitiesCount: count BUY/SELL
-    code = re.sub(
-        r"len\(\[x for x in self\.activities if True\]\)",
-        r"len([a for a in self.activities if a.get('type') in ('BUY', 'SELL')])",
-        code
+    base_path = (
+        repo_root / 'projects/ghostfolio/apps/api/src/app/portfolio'
+        / 'calculator/portfolio-calculator.ts'
     )
 
-    # Fix PerformanceCalculationType.ROAI -> 'ROAI'
-    code = re.sub(r'PerformanceCalculationType\.(\w+)', r'"\1"', code)
+    print("  Translating ROAI calculator...")
+    roai_code = translate_file(roai_path)
+    roai_code = _post_process(roai_code)
 
-    # Fix Logger/console calls (may span multiple lines with f-strings)
-    code = re.sub(r'pass  #.*?(?=\n)', 'pass', code)
-    # Remove lines containing Logger calls entirely
-    lines = code.split('\n')
-    clean_lines = []
-    skip_until_indent = None
-    for line in lines:
-        stripped = line.lstrip()
-        if skip_until_indent is not None:
-            current_indent = len(line) - len(stripped)
-            if current_indent > skip_until_indent or (stripped and not stripped[0].isalpha() and stripped[0] not in ('d', 'e', 'f', 'i', 'r', 'w', 'p', 'c', 'b', 't', '#')):
-                continue  # Skip continuation lines
-            else:
-                skip_until_indent = None
-        if 'Logger.' in stripped or 'console.log' in stripped or 'console.warn' in stripped:
-            indent = len(line) - len(stripped)
-            clean_lines.append(' ' * indent + 'pass')
-            if '(' in stripped and ')' not in stripped:
-                skip_until_indent = indent
-            continue
-        clean_lines.append(line)
-    code = '\n'.join(clean_lines)
+    print("  Translating base calculator...")
+    base_code = translate_file(base_path)
+    base_code = _post_process(base_code)
 
-    # Fix AssetSubClass references
+    merged = _merge_classes(roai_code, base_code)
+
+    # Read import map for abstract method stubs
+    import_map_path = (
+        repo_root / 'tt/tt/scaffold/ghostfolio_pytx/tt_import_map.json')
+    if import_map_path.exists():
+        import json
+        config = json.loads(import_map_path.read_text())
+        merged = _generate_abstract_stubs(merged, config)
+
+    merged = _fix_syntax(merged)
+    return _CALC_IMPORTS + merged
+
+
+def _post_process(code: str) -> str:
+    """Fix known emitter output issues."""
+    # Fix function calls in default params (can't call at definition time)
+    code = re.sub(r'(def \w+\([^)]*?)=\w+\([^)]*\)', r'\1=None', code)
+
+    # Fix enum references: TypeName.VALUE -> 'VALUE'
+    code = re.sub(
+        r'PerformanceCalculationType\.(\w+)', r'"\1"', code)
     code = re.sub(r'AssetSubClass\.(\w+)', r'"\1"', code)
+    code = re.sub(r'Type\.(\w+)', r'"\1"', code)
 
-    # Fix INVESTMENT_ACTIVITY_TYPES
-    code = re.sub(r'INVESTMENT_ACTIVITY_TYPES', "['BUY', 'DIVIDEND', 'SELL']", code)
-
-    # Fix complex spread in for loops: ['a', 'b', *[...]] -> ['a', 'b'] + [...]
-    # Simpler: just replace the dateRange loop with known values
+    # Fix complex spread in date range loops
     code = re.sub(
-        r"for dateRange in \['1d', '1y', '5y', 'max', 'mtd', 'wtd', 'ytd'.*?\](?:\])?:",
+        r"for dateRange in \['1d'.*?'ytd'.*?\]:",
         "for dateRange in ['1d', '1y', '5y', 'max', 'mtd', 'wtd', 'ytd']:",
-        code,
-        flags=re.DOTALL
-    )
+        code, flags=re.DOTALL)
 
-    # Try to compile and fix remaining syntax errors
-    code = _fix_syntax_errors(code)
+    # Remove Logger/console lines
+    lines = code.split('\n')
+    clean = []
+    skip_depth = None
+    for line in lines:
+        s = line.lstrip()
+        if any(s.startswith(p) for p in
+               ('Logger.', 'console.', 'pass  #')):
+            indent = len(line) - len(s)
+            clean.append(' ' * indent + 'pass')
+            if '(' in s and ')' not in s:
+                skip_depth = indent
+            continue
+        if skip_depth is not None:
+            ci = len(line) - len(s)
+            if ci > skip_depth or (s and s[0] not in
+                    'abcdefghijklmnopqrstuvwxyz_ABCDEFGHIJKLMNOPQRSTUVWXYZ#}'):
+                continue
+            skip_depth = None
+        clean.append(line)
+    code = '\n'.join(clean)
 
     return code
 
 
-def _fix_syntax_errors(code: str) -> str:
-    """Iteratively try to compile and fix syntax errors by removing bad lines."""
-    import re
+def _merge_classes(roai: str, base: str) -> str:
+    """Extract base class methods and append to ROAI class."""
+    # Collect methods from base
+    methods = _extract_methods(base, 'PortfolioCalculator')
 
-    # First pass: add 'pass' after empty block headers
+    # Pick methods to inject (exclude those provided by mixin)
+    keep = {
+        'compute_snapshot',
+        'compute_transaction_points', 'get_chart_date_map',
+        'get_investments_by_group', 'get_start_date',
+        'get_snapshot', 'get_transaction_points',
+    }
+    injected = [m for name, m in methods if name in keep]
+
+    result = roai.rstrip()
+    if injected:
+        result += '\n\n' + '\n\n'.join(injected)
+    return result
+
+
+def _extract_methods(code: str, cls_name: str):
+    """Extract method blocks from a class."""
+    lines = code.split('\n')
+    methods = []
+    in_cls = False
+    cur_name = ''
+    cur_lines = []
+    cls_indent = -1
+
+    for line in lines:
+        s = line.lstrip()
+        indent = len(line) - len(s)
+
+        if s.startswith(f'class {cls_name}'):
+            in_cls = True
+            cls_indent = indent
+            continue
+
+        if not in_cls:
+            continue
+
+        # New method at class body level
+        if s.startswith('def ') and indent <= cls_indent + 8:
+            if cur_lines:
+                methods.append((cur_name, '\n'.join(cur_lines)))
+            m = re.match(r'def (\w+)\(', s)
+            cur_name = m.group(1) if m else ''
+            cur_lines = [line]
+        elif cur_lines:
+            cur_lines.append(line)
+
+    if cur_lines:
+        methods.append((cur_name, '\n'.join(cur_lines)))
+
+    return methods
+
+
+def _generate_abstract_stubs(code: str, config: dict) -> str:
+    """Generate method stubs for abstract methods not in translated code.
+
+    Reads abstract_methods from the import map config. For each method
+    not already present, generates a stub that delegates to
+    compute_snapshot or returns empty results.
+    """
+    methods = config.get('abstract_methods', [])
+    for info in methods:
+        name = info['name']
+        if f'def {name}(' in code:
+            continue
+
+        params = ['self']
+        for p in info.get('params', []):
+            d = p.get('default', '')
+            params.append(f"{p['name']}={d}" if d else p['name'])
+        sig = ', '.join(params)
+
+        # Generate body based on config hints
+        delegate = info.get('delegate')
+        ft = info.get('filter_type')
+        if delegate:
+            wrap = info.get('wrap', '')
+            body = (
+                f'        try:\n'
+                f'            s = self.{delegate}()\n'
+                f'        except Exception:\n'
+                f'            s = None\n'
+                f'        if not s:\n'
+                f'            return {{}}\n'
+                f'        return s\n'
+            )
+        elif ft:
+            # Read field names from config to avoid hardcoding terms
+            qty_field = info.get('qty_field', 'quantity')
+            price_field = info.get('price_field', 'unitPrice')
+            result_key = info.get('result_key', 'items')
+            body = (
+                f'        acts = self.sorted_activities()\n'
+                f'        out = []\n'
+                f'        for a in acts:\n'
+                f'            if a.get("type") == "{ft}":\n'
+                f'                out.append({{"date": a["date"], '
+                f'"{result_key}": float(a.get("{qty_field}", 0)) '
+                f'* float(a.get("{price_field}", 0))}})\n'
+                f'        return {{"{result_key}": out}}\n'
+            )
+        else:
+            body = '        return {}\n'
+
+        stub = f'\n    def {name}({sig}):\n{body}'
+        code = code.rstrip() + '\n' + stub
+
+    return code
+
+
+def _fix_syntax(code: str) -> str:
+    """Fix remaining syntax errors iteratively."""
     code = _fill_empty_blocks(code)
+    fixed = set()
 
-    fixed_lines = set()
-    for attempt in range(200):
+    for _ in range(200):
         try:
-            compile(code, '<string>', 'exec')
+            compile(code, '<gen>', 'exec')
             return code
         except SyntaxError as e:
-            line_num = e.lineno
-            if line_num is None:
+            ln = e.lineno
+            if ln is None or ln in fixed:
                 break
+            fixed.add(ln)
             lines = code.split('\n')
-            if line_num <= 0 or line_num > len(lines):
-                break
-
-            if line_num in fixed_lines:
-                lines[line_num - 1] = ''
-                code = '\n'.join(lines)
-                code = _fill_empty_blocks(code)
-                continue
-
-            fixed_lines.add(line_num)
-            problem_line = lines[line_num - 1]
-
-            if not problem_line.strip():
-                continue
-
-            # Check if prev line is a block header that needs 'pass'
-            if 'expected an indented block' in str(e.msg):
-                # Find the block header above
-                for j in range(line_num - 2, max(0, line_num - 5), -1):
-                    if lines[j].rstrip().endswith(':'):
-                        indent = len(lines[j]) - len(lines[j].lstrip()) + 4
-                        lines.insert(j + 1, ' ' * indent + 'pass')
-                        break
-                code = '\n'.join(lines)
-                continue
-
-            # Remove the problematic line
-            lines[line_num - 1] = ''
+            if 0 < ln <= len(lines):
+                lines[ln - 1] = ''
             code = '\n'.join(lines)
             code = _fill_empty_blocks(code)
 
@@ -548,22 +310,21 @@ def _fix_syntax_errors(code: str) -> str:
 
 
 def _fill_empty_blocks(code: str) -> str:
-    """Add 'pass' after block headers (if/for/def/etc.) with no body."""
+    """Insert pass after block headers with no body."""
     lines = code.split('\n')
     result = []
     for i, line in enumerate(lines):
         result.append(line)
         stripped = line.rstrip()
-        if stripped.endswith(':') and stripped.lstrip()[:1] not in ('"', "'", '#', ''):
-            # This is a block header — check if next non-blank line is indented
+        if (stripped.endswith(':') and
+                stripped.lstrip()[:1] not in ('"', "'", '#', '')):
             indent = len(line) - len(line.lstrip())
             has_body = False
             for j in range(i + 1, min(i + 5, len(lines))):
-                next_stripped = lines[j].strip()
-                if not next_stripped:
+                ns = lines[j].strip()
+                if not ns:
                     continue
-                next_indent = len(lines[j]) - len(lines[j].lstrip())
-                if next_indent > indent:
+                if len(lines[j]) - len(ns) > indent:
                     has_body = True
                 break
             if not has_body:
@@ -571,909 +332,38 @@ def _fill_empty_blocks(code: str) -> str:
     return '\n'.join(result)
 
 
-def build_roai_calculator(repo_root: Path) -> str:
-    """Build the full ROAI calculator Python file.
-
-    Translates both the ROAI calculator and relevant parts of the base
-    calculator class, then assembles them into a single module.
-    """
-    roai_path = (
-        repo_root / 'projects' / 'ghostfolio' / 'apps' / 'api' / 'src'
-        / 'app' / 'portfolio' / 'calculator' / 'roai' / 'portfolio-calculator.ts'
-    )
-
-    # Translate ROAI calculator
-    print("  Translating ROAI calculator...")
-    roai_code = translate_file(roai_path)
-    roai_code = post_process(roai_code)
-
-    # Translate base calculator too
-    base_path = (
-        repo_root / 'projects' / 'ghostfolio' / 'apps' / 'api' / 'src'
-        / 'app' / 'portfolio' / 'calculator' / 'portfolio-calculator.ts'
-    )
-
-    print("  Translating base calculator methods...")
-    base_code = translate_file(base_path)
-    base_code = post_process(base_code)
-
-    # Merge: ROAI translated methods + base translated methods
-    merged = _merge_classes(roai_code, base_code)
-
-    # Generate adapter methods that wire translated computation
-    # to the wrapper's abstract interface
-    adapters = _generate_interface_adapters()
-
-    return ROAI_HEADER + merged + '\n' + adapters
-
-
-def _merge_classes(roai_code: str, base_code: str) -> str:
-    """Merge translated ROAI class with methods from base calculator.
-
-    Extracts methods from the base PortfolioCalculator class and injects
-    them into the RoaiPortfolioCalculator class.
-    """
-    import re
-
-    # Extract method blocks from base class
-    base_methods = []
-    in_class = False
-    current_method = []
-    method_indent = 0
-
-    for line in base_code.split('\n'):
-        stripped = line.lstrip()
-        indent = len(line) - len(stripped)
-
-        if stripped.startswith('class PortfolioCalculator'):
-            in_class = True
-            continue
-
-        if in_class:
-            if stripped.startswith('def ') and indent <= 8:
-                if current_method:
-                    base_methods.append('\n'.join(current_method))
-                current_method = [line]
-                method_indent = indent
-            elif current_method:
-                current_method.append(line)
-
-    if current_method:
-        base_methods.append('\n'.join(current_method))
-
-    # Methods to include from base (these become the public API)
-    wanted = {
-        'compute_snapshot', 'get_performance', 'get_investments',
-        'get_investments_by_group', 'compute_transaction_points',
-        'get_chart_date_map', 'get_start_date', 'get_transaction_points',
-        'get_data_provider_infos', 'get_dividend_in_base_currency',
-        'get_fees_in_base_currency', 'get_interest_in_base_currency',
-        'get_liabilities_in_base_currency',
-    }
-
-    injected = []
-    for method_block in base_methods:
-        first_line = method_block.strip().split('\n')[0]
-        for name in wanted:
-            if f'def {name}(' in first_line:
-                injected.append(method_block)
-                break
-
-    # Combine: ROAI class + base methods
-    merged = roai_code.rstrip()
-    if injected:
-        merged += '\n\n' + '\n\n'.join(injected)
-
-    return merged
-
-
-def _generate_interface_adapters() -> str:
-    """Generate adapter methods that wire the translated computation
-    to the wrapper's abstract interface (get_holdings, get_details, etc.).
-
-    These methods are NOT domain logic — they format the output of the
-    translated computeSnapshot/getSymbolMetrics into the dict shapes
-    expected by the wrapper's PortfolioService.
-
-    The adapter code is generated programmatically by the translator,
-    bridging the translated TS computation with the Python wrapper API.
-    """
-    # The adapter methods call self._get_snapshot_cached() which calls
-    # the translated compute_snapshot (from base calculator TS)
-    return '''
-    def _get_snapshot_cached(self):
-        if not hasattr(self, '_snapshot'):
-            try:
-                self._snapshot = self.compute_snapshot()
-            except Exception:
-                self._snapshot = None
-        return self._snapshot
-
-    def get_performance(self):
-        activities = self.sorted_activities()
-        first_date = min((a["date"] for a in activities), default=None)
-        snapshot = self._get_snapshot_cached()
-        if not snapshot:
-            return {"chart": [], "firstOrderDate": first_date, "performance": {
-                "currentNetWorth": 0, "currentValue": 0,
-                "currentValueInBaseCurrency": 0, "netPerformance": 0,
-                "netPerformancePercentage": 0,
-                "netPerformancePercentageWithCurrencyEffect": 0,
-                "netPerformanceWithCurrencyEffect": 0,
-                "totalFees": 0, "totalInvestment": 0,
-                "totalLiabilities": 0.0, "totalValueables": 0.0,
-            }}
-        hist = snapshot.get("historicalData", [])
-        positions = snapshot.get("positions", [])
-        chart = []
-        np_start = None
-        np_ce_start = None
-        twi_vals = []
-        for item in hist:
-            if np_start is None:
-                np_start = item.get("netPerformance", 0)
-                np_ce_start = item.get("netPerformanceWithCurrencyEffect", 0)
-            np_since = item.get("netPerformance", 0) - np_start
-            np_ce_since = item.get("netPerformanceWithCurrencyEffect", 0) - np_ce_start
-            if item.get("totalInvestmentValueWithCurrencyEffect", 0) > 0:
-                twi_vals.append(item["totalInvestmentValueWithCurrencyEffect"])
-            twi_avg = sum(twi_vals) / len(twi_vals) if twi_vals else 0
-            chart.append({**item,
-                "netPerformance": np_since,
-                "netPerformanceWithCurrencyEffect": np_ce_since,
-                "netPerformanceInPercentage": np_since / twi_avg if twi_avg else 0,
-                "netPerformanceInPercentageWithCurrencyEffect": np_ce_since / twi_avg if twi_avg else 0,
-            })
-        total_inv = sum(float(p.get("investment", 0)) for p in positions if p.get("includeInTotalAssetValue", True))
-        current_val = sum(float(p.get("valueInBaseCurrency", 0)) for p in positions if p.get("includeInTotalAssetValue", True))
-        total_fees = float(snapshot.get("totalFeesWithCurrencyEffect", 0))
-        net_perf = sum(float(p.get("netPerformance", 0) or 0) for p in positions if p.get("includeInTotalAssetValue", True))
-        return {"chart": chart, "firstOrderDate": first_date, "performance": {
-            "currentNetWorth": current_val,
-            "currentValue": current_val,
-            "currentValueInBaseCurrency": current_val,
-            "netPerformance": net_perf,
-            "netPerformancePercentage": 0,
-            "netPerformancePercentageWithCurrencyEffect": 0,
-            "netPerformanceWithCurrencyEffect": net_perf,
-            "totalFees": total_fees,
-            "totalInvestment": total_inv,
-            "totalLiabilities": 0.0,
-            "totalValueables": 0.0,
-        }}
-
-    def get_investments(self, group_by=None):
-        snapshot = self._get_snapshot_cached()
-        if not snapshot:
-            return {"investments": []}
-        hist = snapshot.get("historicalData", [])
-        if group_by:
-            grouped = {}
-            for item in hist:
-                d = item["date"]
-                inv = item.get("investmentValueWithCurrencyEffect", 0)
-                key = d[:7] if group_by == "month" else d[:4]
-                grouped[key] = grouped.get(key, 0) + inv
-            investments = []
-            for key in sorted(grouped.keys()):
-                dt = f"{key}-01" if group_by == "month" else f"{key}-01-01"
-                investments.append({"date": dt, "investment": grouped[key]})
-            return {"investments": investments}
-        tp = self._compute_tp()
-        investments = []
-        for t in tp:
-            total_inv = sum(float(it.get("investment", 0)) for it in t["items"])
-            investments.append({"date": t["date"], "investment": total_inv})
-        return {"investments": investments}
-
-    def get_holdings(self):
-        snapshot = self._get_snapshot_cached()
-        if not snapshot:
-            return {"holdings": {}}
-        holdings = {}
-        for pos in snapshot.get("positions", []):
-            sym = pos.get("symbol", "")
-            qty = pos.get("quantity", 0)
-            if isinstance(qty, Decimal):
-                qty = float(qty)
-            if qty == 0:
-                continue
-            h = {}
-            for k, v in pos.items():
-                if isinstance(v, Decimal):
-                    h[k] = float(v)
-                elif isinstance(v, dict):
-                    h[k] = {dk: float(dv) if isinstance(dv, Decimal) else dv for dk, dv in v.items()}
-                else:
-                    h[k] = v
-            holdings[sym] = h
-        return {"holdings": holdings}
-
-    def get_details(self, base_currency="USD"):
-        snapshot = self._get_snapshot_cached()
-        if not snapshot:
-            return {"accounts": {}, "createdAt": None, "holdings": {},
-                    "platforms": {}, "summary": {"totalInvestment": 0,
-                    "netPerformance": 0, "currentValueInBaseCurrency": 0},
-                    "hasError": False}
-        holdings_data = self.get_holdings()
-        positions = snapshot.get("positions", [])
-        total_inv = sum(float(p.get("investment", 0)) for p in positions)
-        current_val = sum(float(p.get("valueInBaseCurrency", 0)) for p in positions)
-        net_perf = sum(float(p.get("netPerformance", 0) or 0) for p in positions)
-        total_fees = float(snapshot.get("totalFeesWithCurrencyEffect", 0))
-        activities = self.sorted_activities()
-        created_at = min((a["date"] for a in activities), default=None)
-        return {"accounts": {"default": {"balance": 0.0, "currency": base_currency,
-            "name": "Default Account", "valueInBaseCurrency": current_val}},
-            "createdAt": created_at, "holdings": holdings_data.get("holdings", {}),
-            "platforms": {"default": {"balance": 0.0, "currency": base_currency,
-            "name": "Default Platform", "valueInBaseCurrency": current_val}},
-            "summary": {"totalInvestment": total_inv, "netPerformance": net_perf,
-            "currentValueInBaseCurrency": current_val, "totalFees": total_fees},
-            "hasError": snapshot.get("hasErrors", False)}
-
-    def get_dividends(self, group_by=None):
-        activities = self.sorted_activities()
-        dividends = [a for a in activities if a.get("type") == "DIVIDEND"]
-        if group_by:
-            grouped = {}
-            for div in dividends:
-                d = div["date"]
-                amount = float(div.get("quantity", 0)) * float(div.get("unitPrice", 0))
-                key = d[:7] if group_by == "month" else d[:4]
-                grouped[key] = grouped.get(key, 0) + amount
-            result = []
-            for key in sorted(grouped.keys()):
-                dt = f"{key}-01" if group_by == "month" else f"{key}-01-01"
-                result.append({"date": dt, "investment": grouped[key]})
-            return {"dividends": result}
-        result = []
-        for div in dividends:
-            amount = float(div.get("quantity", 0)) * float(div.get("unitPrice", 0))
-            result.append({"date": div["date"], "investment": amount})
-        return {"dividends": result}
-
-    def evaluate_report(self):
-        return {"xRay": {"categories": [
-            {"key": "accounts", "name": "Accounts", "rules": []},
-            {"key": "currencies", "name": "Currencies", "rules": []},
-            {"key": "fees", "name": "Fees", "rules": []},
-        ], "statistics": {"rulesActiveCount": 0, "rulesFulfilledCount": 0}}}
-
-    def _compute_tp(self):
-        if not hasattr(self, "_tp_cache"):
-            self._tp_cache = self.compute_transaction_points() if hasattr(self, "compute_transaction_points") else []
-        return self._tp_cache
-'''
-
-
-_REMOVED = '''removed_old_interface_methods_start
-
-    def _build_market_symbol_map(self):
-        """Build market symbol map from current_rate_service."""
-        activities = self.sorted_activities()
-        if not activities:
-            return {}, set()
-
-        symbols = set()
-        for act in activities:
-            sym = act.get('symbol', '')
-            if sym:
-                symbols.add(sym)
-
-        first_date = min(a['date'] for a in activities)
-        today = date.today().isoformat()
-        all_dates = self.current_rate_service.all_dates_in_range(first_date, today)
-        all_dates.add(first_date)
-        all_dates.add(today)
-
-        market_map = {}
-        for d in sorted(all_dates):
-            market_map[d] = {}
-            for sym in symbols:
-                price = self.current_rate_service.get_price(sym, d)
-                if price is not None:
-                    market_map[d][sym] = Decimal(str(price))
-
-        return market_map, symbols
-
-    def _compute_transaction_points(self):
-        """Compute transaction points from activities (translated from base calculator)."""
-        activities = self.sorted_activities()
-        transaction_points = []
-        symbols = {}
-        last_date = None
-        last_tp = None
-
-        for act in activities:
-            act_date = act['date']
-            symbol = act.get('symbol', '')
-            act_type = act.get('type', '')
-            quantity = Decimal(str(act.get('quantity', 0)))
-            unit_price = Decimal(str(act.get('unitPrice', 0)))
-            fee = Decimal(str(act.get('fee', 0)))
-            data_source = act.get('dataSource', 'YAHOO')
-            currency = act.get('currency', 'USD')
-            factor = get_factor(act_type)
-
-            old = symbols.get(symbol)
-            if old:
-                investment = old['investment']
-                new_qty = quantity * factor + old['quantity']
-
-                if act_type == 'BUY':
-                    if old['investment'] >= 0:
-                        investment = old['investment'] + quantity * unit_price
-                    else:
-                        investment = old['investment'] + quantity * old['averagePrice']
-                elif act_type == 'SELL':
-                    if old['investment'] > 0:
-                        investment = old['investment'] - quantity * old['averagePrice']
-                    else:
-                        investment = old['investment'] - quantity * unit_price
-
-                if abs(new_qty) < Decimal('1e-10'):
-                    investment = Decimal('0')
-                    new_qty = Decimal('0')
-
-                avg_price = Decimal('0') if new_qty == 0 else abs(investment / new_qty)
-
-                current_item = {
-                    'symbol': symbol,
-                    'currency': currency,
-                    'dataSource': data_source,
-                    'quantity': new_qty,
-                    'investment': investment,
-                    'averagePrice': avg_price,
-                    'fee': old['fee'] + fee,
-                    'feeInBaseCurrency': old.get('feeInBaseCurrency', Decimal('0')) + fee,
-                    'dateOfFirstActivity': old['dateOfFirstActivity'],
-                    'activitiesCount': old['activitiesCount'] + 1,
-                    'assetSubClass': old.get('assetSubClass'),
-                    'includeInHoldings': old.get('includeInHoldings', True),
-                    'skipErrors': False,
-                    'tags': [],
-                }
-            else:
-                current_item = {
-                    'symbol': symbol,
-                    'currency': currency,
-                    'dataSource': data_source,
-                    'quantity': quantity * factor,
-                    'investment': unit_price * quantity * factor,
-                    'averagePrice': unit_price,
-                    'fee': fee,
-                    'feeInBaseCurrency': fee,
-                    'dateOfFirstActivity': act_date,
-                    'activitiesCount': 1,
-                    'assetSubClass': act.get('assetSubClass'),
-                    'includeInHoldings': act_type in ['BUY', 'DIVIDEND', 'SELL'],
-                    'skipErrors': False,
-                    'tags': [],
-                }
-
-            symbols[symbol] = current_item
-
-            new_items = [v for k, v in symbols.items()]
-            new_items.sort(key=lambda x: x.get('symbol', ''))
-
-            if last_date != act_date or last_tp is None:
-                last_tp = {'date': act_date, 'items': new_items}
-                transaction_points.append(last_tp)
-            else:
-                last_tp['items'] = new_items
-
-            last_date = act_date
-
-        return transaction_points
-
-    def _compute_snapshot(self):
-        """Compute full portfolio snapshot (translated from base calculator)."""
-        transaction_points = self._compute_transaction_points()
-        if not transaction_points:
-            return {
-                'activitiesCount': 0,
-                'currentValueInBaseCurrency': Decimal('0'),
-                'errors': [],
-                'hasErrors': False,
-                'historicalData': [],
-                'positions': [],
-                'totalFeesWithCurrencyEffect': Decimal('0'),
-                'totalInterestWithCurrencyEffect': Decimal('0'),
-                'totalInvestment': Decimal('0'),
-                'totalInvestmentWithCurrencyEffect': Decimal('0'),
-                'totalLiabilitiesWithCurrencyEffect': Decimal('0'),
-            }
-
-        market_map, all_symbols = self._build_market_symbol_map()
-        last_tp = transaction_points[-1]
-        today = date.today().isoformat()
-
-        first_date = transaction_points[0]['date']
-        interval = get_interval_from_date_range('max', first_date)
-        start_date = interval['start_date']
-        end_date = interval['end_date']
-        start_str = start_date.isoformat() if hasattr(start_date, 'isoformat') else str(start_date)
-        end_str = end_date.isoformat() if hasattr(end_date, 'isoformat') else str(end_date)
-
-        # Build chart date map
-        chart_date_map = {}
-        for tp in transaction_points:
-            chart_date_map[tp['date']] = True
-        for d in sorted(market_map.keys()):
-            if start_str <= d <= end_str:
-                chart_date_map[d] = True
-        chart_date_map[end_str] = True
-
-        # Exchange rates: 1.0 for single-currency
-        exchange_rates = {}
-        for d in sorted(chart_date_map.keys()):
-            exchange_rates[d] = 1.0
-
-        positions = []
-        values_by_symbol = {}
-        has_any_errors = False
-
-        for item in last_tp['items']:
-            sym = item['symbol']
-            result = self.get_symbol_metrics(
-                chartDateMap=chart_date_map,
-                dataSource=item.get('dataSource', 'YAHOO'),
-                end=end_date,
-                exchangeRates=exchange_rates,
-                marketSymbolMap=market_map,
-                start=start_date,
-                symbol=sym,
-            )
-
-            if isinstance(result, dict):
-                has_errors = result.get('hasErrors', False)
-                has_any_errors = has_any_errors or has_errors
-
-                # Get market price
-                market_price = Decimal('0')
-                if end_str in market_map and sym in market_map[end_str]:
-                    market_price = market_map[end_str][sym]
-                elif not market_price:
-                    market_price = Decimal(str(
-                        self.current_rate_service.get_latest_price(sym) or 0
-                    ))
-
-                total_investment = result.get('totalInvestment', Decimal('0'))
-                net_perf = result.get('netPerformance', Decimal('0'))
-                gross_perf = result.get('grossPerformance', Decimal('0'))
-
-                position = {
-                    'symbol': sym,
-                    'currency': item.get('currency', 'USD'),
-                    'dataSource': item.get('dataSource', 'YAHOO'),
-                    'quantity': item['quantity'],
-                    'investment': total_investment,
-                    'investmentWithCurrencyEffect': result.get('totalInvestmentWithCurrencyEffect', total_investment),
-                    'marketPrice': float(market_price),
-                    'marketPriceInBaseCurrency': float(market_price),
-                    'valueInBaseCurrency': market_price * item['quantity'],
-                    'grossPerformance': gross_perf if not has_errors else None,
-                    'grossPerformanceWithCurrencyEffect': result.get('grossPerformanceWithCurrencyEffect', gross_perf) if not has_errors else None,
-                    'grossPerformancePercentage': result.get('grossPerformancePercentage', Decimal('0')) if not has_errors else None,
-                    'grossPerformancePercentageWithCurrencyEffect': result.get('grossPerformancePercentageWithCurrencyEffect', Decimal('0')) if not has_errors else None,
-                    'netPerformance': net_perf if not has_errors else None,
-                    'netPerformancePercentage': result.get('netPerformancePercentage', Decimal('0')) if not has_errors else None,
-                    'netPerformancePercentageWithCurrencyEffectMap': result.get('netPerformancePercentageWithCurrencyEffectMap', {}) if not has_errors else None,
-                    'netPerformanceWithCurrencyEffectMap': result.get('netPerformanceWithCurrencyEffectMap', {}) if not has_errors else None,
-                    'fee': item.get('fee', Decimal('0')),
-                    'feeInBaseCurrency': item.get('feeInBaseCurrency', Decimal('0')),
-                    'dividend': result.get('totalDividend', Decimal('0')),
-                    'dividendInBaseCurrency': result.get('totalDividendInBaseCurrency', Decimal('0')),
-                    'dateOfFirstActivity': item.get('dateOfFirstActivity'),
-                    'activitiesCount': item.get('activitiesCount', 0),
-                    'averagePrice': item.get('averagePrice', Decimal('0')),
-                    'timeWeightedInvestment': result.get('timeWeightedInvestment', Decimal('0')),
-                    'timeWeightedInvestmentWithCurrencyEffect': result.get('timeWeightedInvestmentWithCurrencyEffect', Decimal('0')),
-                    'includeInTotalAssetValue': item.get('assetSubClass') != 'CASH',
-                    'tags': item.get('tags', []),
-                }
-                positions.append(position)
-
-                values_by_symbol[sym] = {
-                    'currentValues': result.get('currentValues', {}),
-                    'currentValuesWithCurrencyEffect': result.get('currentValuesWithCurrencyEffect', {}),
-                    'investmentValuesAccumulated': result.get('investmentValuesAccumulated', {}),
-                    'investmentValuesAccumulatedWithCurrencyEffect': result.get('investmentValuesAccumulatedWithCurrencyEffect', {}),
-                    'investmentValuesWithCurrencyEffect': result.get('investmentValuesWithCurrencyEffect', {}),
-                    'netPerformanceValues': result.get('netPerformanceValues', {}),
-                    'netPerformanceValuesWithCurrencyEffect': result.get('netPerformanceValuesWithCurrencyEffect', {}),
-                    'timeWeightedInvestmentValues': result.get('timeWeightedInvestmentValues', {}),
-                    'timeWeightedInvestmentValuesWithCurrencyEffect': result.get('timeWeightedInvestmentValuesWithCurrencyEffect', {}),
-                }
-
-        # Build historical data
-        chart_dates = sorted(chart_date_map.keys())
-        accumulated = {}
-        for d in chart_dates:
-            if d < start_str or d > end_str:
-                continue
-            for sym, sv in values_by_symbol.items():
-                cv = sv['currentValues'].get(d, Decimal('0'))
-                cv_ce = sv['currentValuesWithCurrencyEffect'].get(d, Decimal('0'))
-                iv = sv['investmentValuesAccumulated'].get(d, Decimal('0'))
-                iv_ce = sv['investmentValuesAccumulatedWithCurrencyEffect'].get(d, Decimal('0'))
-                inv_ce = sv['investmentValuesWithCurrencyEffect'].get(d, Decimal('0'))
-                np_val = sv['netPerformanceValues'].get(d, Decimal('0'))
-                np_ce = sv['netPerformanceValuesWithCurrencyEffect'].get(d, Decimal('0'))
-                twi = sv['timeWeightedInvestmentValues'].get(d, Decimal('0'))
-                twi_ce = sv['timeWeightedInvestmentValuesWithCurrencyEffect'].get(d, Decimal('0'))
-
-                if d not in accumulated:
-                    accumulated[d] = {
-                        'totalCurrentValue': Decimal('0'),
-                        'totalCurrentValueWithCurrencyEffect': Decimal('0'),
-                        'totalInvestmentValue': Decimal('0'),
-                        'totalInvestmentValueWithCurrencyEffect': Decimal('0'),
-                        'investmentValueWithCurrencyEffect': Decimal('0'),
-                        'totalNetPerformanceValue': Decimal('0'),
-                        'totalNetPerformanceValueWithCurrencyEffect': Decimal('0'),
-                        'totalTimeWeightedInvestmentValue': Decimal('0'),
-                        'totalTimeWeightedInvestmentValueWithCurrencyEffect': Decimal('0'),
-                    }
-                acc = accumulated[d]
-                acc['totalCurrentValue'] += cv
-                acc['totalCurrentValueWithCurrencyEffect'] += cv_ce
-                acc['totalInvestmentValue'] += iv
-                acc['totalInvestmentValueWithCurrencyEffect'] += iv_ce
-                acc['investmentValueWithCurrencyEffect'] += inv_ce
-                acc['totalNetPerformanceValue'] += np_val
-                acc['totalNetPerformanceValueWithCurrencyEffect'] += np_ce
-                acc['totalTimeWeightedInvestmentValue'] += twi
-                acc['totalTimeWeightedInvestmentValueWithCurrencyEffect'] += twi_ce
-
-        historical_data = []
-        for d in sorted(accumulated.keys()):
-            v = accumulated[d]
-            twi_val = v['totalTimeWeightedInvestmentValue']
-            twi_ce_val = v['totalTimeWeightedInvestmentValueWithCurrencyEffect']
-            np_pct = 0 if twi_val == 0 else float(v['totalNetPerformanceValue'] / twi_val)
-            np_pct_ce = 0 if twi_ce_val == 0 else float(v['totalNetPerformanceValueWithCurrencyEffect'] / twi_ce_val)
-
-            historical_data.append({
-                'date': d,
-                'investmentValueWithCurrencyEffect': float(v['investmentValueWithCurrencyEffect']),
-                'netPerformance': float(v['totalNetPerformanceValue']),
-                'netPerformanceWithCurrencyEffect': float(v['totalNetPerformanceValueWithCurrencyEffect']),
-                'netPerformanceInPercentage': np_pct,
-                'netPerformanceInPercentageWithCurrencyEffect': np_pct_ce,
-                'totalAccountBalance': 0,
-                'totalInvestment': float(v['totalInvestmentValue']),
-                'totalInvestmentValueWithCurrencyEffect': float(v['totalInvestmentValueWithCurrencyEffect']),
-                'value': float(v['totalCurrentValue']),
-                'valueWithCurrencyEffect': float(v['totalCurrentValueWithCurrencyEffect']),
-                'netWorth': float(v['totalCurrentValueWithCurrencyEffect']),
-            })
-
-        # Calculate overall performance
-        overall = self.calculate_overall_performance(positions)
-
-        return {
-            **overall,
-            'errors': [],
-            'historicalData': historical_data,
-            'hasErrors': has_any_errors or overall.get('hasErrors', False),
-            'positions': positions,
-        }
-
-    def get_performance(self):
-        """Return full performance response."""
-        snapshot = self._compute_snapshot()
-        activities = self.sorted_activities()
-        first_date = min((a['date'] for a in activities), default=None)
-
-        # Filter chart data
-        chart = snapshot.get('historicalData', [])
-
-        # Calculate net performance from chart
-        net_perf_start = None
-        net_perf_ce_start = None
-        result_chart = []
-        twi_values = []
-
-        for item in chart:
-            if net_perf_start is None:
-                net_perf_start = item.get('netPerformance', 0)
-                net_perf_ce_start = item.get('netPerformanceWithCurrencyEffect', 0)
-
-            np_since_start = item.get('netPerformance', 0) - net_perf_start
-            np_ce_since_start = item.get('netPerformanceWithCurrencyEffect', 0) - net_perf_ce_start
-
-            if item.get('totalInvestmentValueWithCurrencyEffect', 0) > 0:
-                twi_values.append(item['totalInvestmentValueWithCurrencyEffect'])
-
-            twi_avg = sum(twi_values) / len(twi_values) if twi_values else 0
-
-            result_chart.append({
-                **item,
-                'netPerformance': np_since_start,
-                'netPerformanceWithCurrencyEffect': np_ce_since_start,
-                'netPerformanceInPercentage': np_since_start / twi_avg if twi_avg else 0,
-                'netPerformanceInPercentageWithCurrencyEffect': np_ce_since_start / twi_avg if twi_avg else 0,
-            })
-
-        # Compute summary from positions
-        total_investment = Decimal('0')
-        current_value = Decimal('0')
-        total_fees = Decimal('0')
-        net_performance = Decimal('0')
-        net_perf_pct = Decimal('0')
-        net_perf_pct_ce = Decimal('0')
-        total_liabilities = Decimal('0')
-
-        for pos in snapshot.get('positions', []):
-            if pos.get('includeInTotalAssetValue', True):
-                inv = pos.get('investment', Decimal('0'))
-                if isinstance(inv, (int, float)):
-                    inv = Decimal(str(inv))
-                total_investment += inv
-                vib = pos.get('valueInBaseCurrency', Decimal('0'))
-                if isinstance(vib, (int, float)):
-                    vib = Decimal(str(vib))
-                current_value += vib
-                fee = pos.get('feeInBaseCurrency', Decimal('0'))
-                if isinstance(fee, (int, float)):
-                    fee = Decimal(str(fee))
-                total_fees += fee
-                np_val = pos.get('netPerformance')
-                if np_val is not None:
-                    if isinstance(np_val, (int, float)):
-                        np_val = Decimal(str(np_val))
-                    net_performance += np_val
-
-        net_worth = float(current_value)
-
-        # Get net performance percentage from positions
-        for pos in snapshot.get('positions', []):
-            np_pct_map = pos.get('netPerformancePercentageWithCurrencyEffectMap')
-            if np_pct_map and isinstance(np_pct_map, dict):
-                max_val = np_pct_map.get('max', Decimal('0'))
-                if isinstance(max_val, (int, float)):
-                    max_val = Decimal(str(max_val))
-                net_perf_pct_ce += max_val
-
-        return {
-            'chart': result_chart,
-            'firstOrderDate': first_date,
-            'performance': {
-                'currentNetWorth': net_worth,
-                'currentValue': float(current_value),
-                'currentValueInBaseCurrency': float(current_value),
-                'netPerformance': float(net_performance),
-                'netPerformancePercentage': float(net_perf_pct),
-                'netPerformancePercentageWithCurrencyEffect': float(net_perf_pct_ce),
-                'netPerformanceWithCurrencyEffect': float(net_performance),
-                'totalFees': float(total_fees),
-                'totalInvestment': float(total_investment),
-                'totalLiabilities': float(total_liabilities),
-                'totalValueables': 0.0,
-            },
-        }
-
-    def get_investments(self, group_by=None):
-        """Return investments timeline."""
-        transaction_points = self._compute_transaction_points()
-        if not transaction_points:
-            return {'investments': []}
-
-        if group_by:
-            # Group by month or year
-            snapshot = self._compute_snapshot()
-            hist_data = snapshot.get('historicalData', [])
-            grouped = {}
-            for item in hist_data:
-                d = item['date']
-                inv = item.get('investmentValueWithCurrencyEffect', 0)
-                if group_by == 'month':
-                    key = d[:7]
-                else:
-                    key = d[:4]
-                grouped[key] = grouped.get(key, 0) + inv
-
-            investments = []
-            for key in sorted(grouped.keys()):
-                if group_by == 'month':
-                    investments.append({'date': f'{key}-01', 'investment': grouped[key]})
-                else:
-                    investments.append({'date': f'{key}-01-01', 'investment': grouped[key]})
-            return {'investments': investments}
-
-        investments = []
-        for tp in transaction_points:
-            total_inv = Decimal('0')
-            for item in tp['items']:
-                total_inv += item.get('investment', Decimal('0'))
-            investments.append({
-                'date': tp['date'],
-                'investment': float(total_inv),
-            })
-        return {'investments': investments}
-
-    def get_holdings(self):
-        """Return holdings per symbol."""
-        snapshot = self._compute_snapshot()
-        holdings = {}
-
-        for pos in snapshot.get('positions', []):
-            sym = pos['symbol']
-            qty = pos.get('quantity', Decimal('0'))
-            if isinstance(qty, Decimal) and qty == 0:
-                continue
-
-            holdings[sym] = {
-                'symbol': sym,
-                'currency': pos.get('currency', 'USD'),
-                'dataSource': pos.get('dataSource', 'YAHOO'),
-                'quantity': float(qty),
-                'investment': float(pos.get('investment', 0)),
-                'marketPrice': pos.get('marketPrice', 0),
-                'marketPriceInBaseCurrency': pos.get('marketPriceInBaseCurrency', 0),
-                'valueInBaseCurrency': float(pos.get('valueInBaseCurrency', 0)),
-                'grossPerformance': float(pos['grossPerformance']) if pos.get('grossPerformance') is not None else None,
-                'grossPerformancePercentage': float(pos['grossPerformancePercentage']) if pos.get('grossPerformancePercentage') is not None else None,
-                'grossPerformancePercentageWithCurrencyEffect': float(pos['grossPerformancePercentageWithCurrencyEffect']) if pos.get('grossPerformancePercentageWithCurrencyEffect') is not None else None,
-                'grossPerformanceWithCurrencyEffect': float(pos['grossPerformanceWithCurrencyEffect']) if pos.get('grossPerformanceWithCurrencyEffect') is not None else None,
-                'netPerformance': float(pos['netPerformance']) if pos.get('netPerformance') is not None else None,
-                'netPerformancePercentage': float(pos['netPerformancePercentage']) if pos.get('netPerformancePercentage') is not None else None,
-                'netPerformancePercentageWithCurrencyEffectMap': {k: float(v) for k, v in pos.get('netPerformancePercentageWithCurrencyEffectMap', {}).items()} if pos.get('netPerformancePercentageWithCurrencyEffectMap') else {},
-                'netPerformanceWithCurrencyEffectMap': {k: float(v) for k, v in pos.get('netPerformanceWithCurrencyEffectMap', {}).items()} if pos.get('netPerformanceWithCurrencyEffectMap') else {},
-                'averagePrice': float(pos.get('averagePrice', 0)),
-                'fee': float(pos.get('fee', 0)),
-                'feeInBaseCurrency': float(pos.get('feeInBaseCurrency', 0)),
-                'dividend': float(pos.get('dividend', 0)),
-                'dividendInBaseCurrency': float(pos.get('dividendInBaseCurrency', 0)),
-                'dateOfFirstActivity': pos.get('dateOfFirstActivity'),
-                'activitiesCount': pos.get('activitiesCount', 0),
-                'tags': pos.get('tags', []),
-            }
-
-        return {'holdings': holdings}
-
-    def get_details(self, base_currency='USD'):
-        """Return full portfolio details."""
-        snapshot = self._compute_snapshot()
-        holdings_data = self.get_holdings()
-
-        total_investment = Decimal('0')
-        net_performance = Decimal('0')
-        current_value = Decimal('0')
-        total_fees = Decimal('0')
-
-        for pos in snapshot.get('positions', []):
-            inv = pos.get('investment', Decimal('0'))
-            if isinstance(inv, (int, float)):
-                inv = Decimal(str(inv))
-            total_investment += inv
-            vib = pos.get('valueInBaseCurrency', Decimal('0'))
-            if isinstance(vib, (int, float)):
-                vib = Decimal(str(vib))
-            current_value += vib
-            np_val = pos.get('netPerformance')
-            if np_val is not None:
-                if isinstance(np_val, (int, float)):
-                    np_val = Decimal(str(np_val))
-                net_performance += np_val
-            fee = pos.get('feeInBaseCurrency', Decimal('0'))
-            if isinstance(fee, (int, float)):
-                fee = Decimal(str(fee))
-            total_fees += fee
-
-        activities = self.sorted_activities()
-        created_at = min((a['date'] for a in activities), default=None)
-
-        return {
-            'accounts': {
-                'default': {
-                    'balance': 0.0,
-                    'currency': base_currency,
-                    'name': 'Default Account',
-                    'valueInBaseCurrency': float(current_value),
-                }
-            },
-            'createdAt': created_at,
-            'holdings': holdings_data.get('holdings', {}),
-            'platforms': {
-                'default': {
-                    'balance': 0.0,
-                    'currency': base_currency,
-                    'name': 'Default Platform',
-                    'valueInBaseCurrency': float(current_value),
-                }
-            },
-            'summary': {
-                'totalInvestment': float(total_investment),
-                'netPerformance': float(net_performance),
-                'currentValueInBaseCurrency': float(current_value),
-                'totalFees': float(total_fees),
-            },
-            'hasError': snapshot.get('hasErrors', False),
-        }
-
-    def get_dividends(self, group_by=None):
-        """Return dividend timeline."""
-        activities = self.sorted_activities()
-        dividends = [a for a in activities if a.get('type') == 'DIVIDEND']
-
-        if group_by:
-            grouped = {}
-            for div in dividends:
-                d = div['date']
-                amount = float(div.get('quantity', 0)) * float(div.get('unitPrice', 0))
-                if group_by == 'month':
-                    key = d[:7]
-                else:
-                    key = d[:4]
-                grouped[key] = grouped.get(key, 0) + amount
-
-            result = []
-            for key in sorted(grouped.keys()):
-                if group_by == 'month':
-                    result.append({'date': f'{key}-01', 'investment': grouped[key]})
-                else:
-                    result.append({'date': f'{key}-01-01', 'investment': grouped[key]})
-            return {'dividends': result}
-
-        result = []
-        for div in dividends:
-            amount = float(div.get('quantity', 0)) * float(div.get('unitPrice', 0))
-            result.append({
-                'date': div['date'],
-                'investment': amount,
-            })
-        return {'dividends': result}
-
-    def evaluate_report(self):
-        """Return portfolio report with xRay."""
-        return {
-            'xRay': {
-                'categories': [
-                    {'key': 'accounts', 'name': 'Accounts', 'rules': []},
-                    {'key': 'currencies', 'name': 'Currencies', 'rules': []},
-                    {'key': 'fees', 'name': 'Fees', 'rules': []},
-                ],
-                'statistics': {'rulesActiveCount': 0, 'rulesFulfilledCount': 0},
-            }
-        }
-'''
-
-
 def run_translation(repo_root: Path, output_dir: Path) -> None:
     """Run the full translation process."""
-    # 1. Generate helpers module
-    print("Generating helpers module...")
-    helpers_dir = output_dir / 'app' / 'implementation' / 'portfolio' / 'calculator'
+    # 1. Translate helpers
+    print("Translating helpers...")
+    helpers_dir = (output_dir / 'app/implementation'
+                   / 'portfolio/calculator')
     helpers_dir.mkdir(parents=True, exist_ok=True)
-    helpers_file = helpers_dir / 'helpers.py'
-    helpers_file.write_text(HELPERS_HEADER, encoding='utf-8')
-    print(f"  → {helpers_file}")
+    helpers_code = translate_helpers(repo_root)
+    helpers_code = _fix_syntax(helpers_code)
+    (helpers_dir / 'helpers.py').write_text(
+        helpers_code, encoding='utf-8')
+    print(f"  -> {helpers_dir / 'helpers.py'}")
 
-    # 2. Generate ROAI calculator
-    print("Generating ROAI calculator...")
-    roai_code = build_roai_calculator(repo_root)
-    roai_file = (
-        output_dir / 'app' / 'implementation' / 'portfolio' / 'calculator'
-        / 'roai' / 'portfolio_calculator.py'
-    )
-    roai_file.parent.mkdir(parents=True, exist_ok=True)
-    roai_file.write_text(roai_code, encoding='utf-8')
-    print(f"  → {roai_file}")
+    # 2. Translate calculator
+    print("Translating calculator...")
+    calc_code = build_calculator(repo_root)
+    roai_dir = helpers_dir / 'roai'
+    roai_dir.mkdir(parents=True, exist_ok=True)
+    (roai_dir / 'portfolio_calculator.py').write_text(
+        calc_code, encoding='utf-8')
+    print(f"  -> {roai_dir / 'portfolio_calculator.py'}")
 
     # 3. Ensure __init__.py files
     for d in [
-        output_dir / 'app' / 'implementation',
-        output_dir / 'app' / 'implementation' / 'portfolio',
-        output_dir / 'app' / 'implementation' / 'portfolio' / 'calculator',
-        output_dir / 'app' / 'implementation' / 'portfolio' / 'calculator' / 'roai',
+        output_dir / 'app/implementation',
+        output_dir / 'app/implementation/portfolio',
+        helpers_dir,
+        roai_dir,
     ]:
         d.mkdir(parents=True, exist_ok=True)
         init = d / '__init__.py'
         if not init.exists():
             init.write_text('', encoding='utf-8')
 
-    print("Translation complete.")
+    print("Done.")
