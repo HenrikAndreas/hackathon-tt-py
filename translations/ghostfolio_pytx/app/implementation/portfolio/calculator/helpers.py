@@ -33,6 +33,133 @@ def ga(obj, key, default=None):
     return default
 
 
+def to_date(d):
+    if d is None: return None
+    if isinstance(d, date) and not isinstance(d, datetime):
+        return d
+    if isinstance(d, datetime): return d.date()
+    if isinstance(d, str): return parse_date(d)
+    return None
+
+def to_datetime(d):
+    if isinstance(d, datetime): return d
+    if isinstance(d, date):
+        return datetime(d.year, d.month, d.day)
+    if isinstance(d, str):
+        pd = parse_date(d)
+        return datetime(pd.year, pd.month, pd.day) if pd else None
+    return None
+
+def parse_date(d):
+    if isinstance(d, (date, datetime)):
+        return d if isinstance(d, date) else d.date()
+    if isinstance(d, str):
+        for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y"):
+            try: return datetime.strptime(d, fmt).date()
+            except ValueError: pass
+        try: return datetime.fromisoformat(
+            d.replace("Z", "+00:00")).date()
+        except (ValueError, AttributeError): pass
+    return None
+
+def reset_hours(d):
+    if isinstance(d, datetime):
+        return d.replace(hour=0, minute=0, second=0, microsecond=0)
+    return d
+
+def sort_by(arr, key_fn):
+    if callable(key_fn): return sorted(arr, key=key_fn)
+    return sorted(arr)
+
+def uniq_by(arr, key):
+    seen, r = set(), []
+    for item in arr:
+        k = ga(item, key) if isinstance(key, str) else key
+        if k not in seen: seen.add(k); r.append(item)
+    return r
+
+def date_format(d, fmt=None):
+    if d is None: return ""
+    if isinstance(d, str): return d
+    if hasattr(d, "strftime"): return d.strftime("%Y-%m-%d")
+    return str(d)
+
+def is_before(a, b):
+    a, b = to_date(a), to_date(b)
+    return a < b if a and b else False
+
+def is_after(a, b):
+    a, b = to_date(a), to_date(b)
+    return a > b if a and b else False
+
+def difference_in_days(a, b):
+    a, b = to_date(a), to_date(b)
+    return (a - b).days if a and b else 0
+
+def add_milliseconds(d, ms):
+    d = to_datetime(d)
+    return d + timedelta(milliseconds=ms) if d else d
+
+def sub_days(d, n):
+    d = to_date(d)
+    return d - timedelta(days=n) if d else d
+
+def each_day_of_interval(interval, opts=None):
+    s = to_date(ga(interval, "start"))
+    e = to_date(ga(interval, "end"))
+    if not s or not e: return []
+    step = ga(opts, "step", 1) if opts else 1
+    r, c = [], s
+    while c <= e:
+        r.append(c)
+        c += timedelta(days=step)
+    return r
+
+def each_year_of_interval(interval):
+    s = to_date(ga(interval, "start"))
+    e = to_date(ga(interval, "end"))
+    if not s or not e: return []
+    r, y = [], s.year
+    while y <= e.year:
+        r.append(date(y, 1, 1))
+        y += 1
+    return r
+
+def start_of_day(d):
+    return to_date(d)
+
+def end_of_day(d):
+    return to_date(d)
+
+def start_of_year(d):
+    d = to_date(d)
+    return d.replace(month=1, day=1) if d else None
+
+def end_of_year(d):
+    d = to_date(d)
+    return d.replace(month=12, day=31) if d else None
+
+def is_within_interval(d, interval):
+    d = to_date(d)
+    s = to_date(ga(interval, "start"))
+    e = to_date(ga(interval, "end"))
+    return s <= d <= e if d and s and e else False
+
+def date_min(dates):
+    v = [to_date(d) for d in dates if d]
+    return min(v) if v else None
+
+def is_this_year(d):
+    d = to_date(d)
+    return d.year == date.today().year if d else False
+
+def parse_iso(s):
+    return parse_date(s)
+
+def is_number(x):
+    return isinstance(x, (int, float, Decimal))
+
+
 # --- from portfolio.helper.ts ---
 def get_factor(activityType):
     factor = None

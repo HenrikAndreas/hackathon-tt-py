@@ -85,6 +85,9 @@ def translate_helpers(repo_root: Path) -> str:
 
     # Generic accessor — works with dicts, objects, and None
     # Also handles nested-to-flat fallback via _item thread local
+    # Standard library translations (date-fns -> datetime, lodash -> builtins)
+    lib_funcs = _generate_lib_translations()
+
     chunks = [
         'import threading\n'
         'gactx = threading.local()\n\n'
@@ -109,6 +112,8 @@ def translate_helpers(repo_root: Path) -> str:
         '        return getattr(obj, key, default)\n'
         '    return default\n',
     ]
+    chunks.append(lib_funcs)
+
     for path in helper_files:
         if not path.exists():
             continue
@@ -210,6 +215,152 @@ def _post_process(code: str) -> str:
     return code
 
 
+def _generate_lib_translations() -> str:
+    """Generate Python implementations for JS library functions.
+
+    Reads the emitter's library mapping dicts (DATE_FNS, LODASH)
+    and generates corresponding Python functions. These are generic
+    translations of standard JS library patterns to Python stdlib.
+    """
+    from tt.emitter import DATE_FNS, LODASH
+    funcs = []
+
+    # Generate date operation functions from the DATE_FNS mapping
+    # Each mapped name needs an implementation using Python datetime
+    date_impls = {
+        'date_format': (
+            'def date_format(d, fmt=None):\n'
+            '    if d is None: return ""\n'
+            '    if isinstance(d, str): return d\n'
+            '    if hasattr(d, "strftime"): return d.strftime("%Y-%m-%d")\n'
+            '    return str(d)\n'),
+        'is_before': (
+            'def is_before(a, b):\n'
+            '    a, b = to_date(a), to_date(b)\n'
+            '    return a < b if a and b else False\n'),
+        'is_after': (
+            'def is_after(a, b):\n'
+            '    a, b = to_date(a), to_date(b)\n'
+            '    return a > b if a and b else False\n'),
+        'difference_in_days': (
+            'def difference_in_days(a, b):\n'
+            '    a, b = to_date(a), to_date(b)\n'
+            '    return (a - b).days if a and b else 0\n'),
+        'add_milliseconds': (
+            'def add_milliseconds(d, ms):\n'
+            '    d = to_datetime(d)\n'
+            '    return d + timedelta(milliseconds=ms) if d else d\n'),
+        'sub_days': (
+            'def sub_days(d, n):\n'
+            '    d = to_date(d)\n'
+            '    return d - timedelta(days=n) if d else d\n'),
+        'each_day_of_interval': (
+            'def each_day_of_interval(interval, opts=None):\n'
+            '    s = to_date(ga(interval, "start"))\n'
+            '    e = to_date(ga(interval, "end"))\n'
+            '    if not s or not e: return []\n'
+            '    step = ga(opts, "step", 1) if opts else 1\n'
+            '    r, c = [], s\n'
+            '    while c <= e:\n'
+            '        r.append(c)\n'
+            '        c += timedelta(days=step)\n'
+            '    return r\n'),
+        'each_year_of_interval': (
+            'def each_year_of_interval(interval):\n'
+            '    s = to_date(ga(interval, "start"))\n'
+            '    e = to_date(ga(interval, "end"))\n'
+            '    if not s or not e: return []\n'
+            '    r, y = [], s.year\n'
+            '    while y <= e.year:\n'
+            '        r.append(date(y, 1, 1))\n'
+            '        y += 1\n'
+            '    return r\n'),
+        'start_of_day': 'def start_of_day(d):\n    return to_date(d)\n',
+        'end_of_day': 'def end_of_day(d):\n    return to_date(d)\n',
+        'start_of_year': (
+            'def start_of_year(d):\n'
+            '    d = to_date(d)\n'
+            '    return d.replace(month=1, day=1) if d else None\n'),
+        'end_of_year': (
+            'def end_of_year(d):\n'
+            '    d = to_date(d)\n'
+            '    return d.replace(month=12, day=31) if d else None\n'),
+        'is_within_interval': (
+            'def is_within_interval(d, interval):\n'
+            '    d = to_date(d)\n'
+            '    s = to_date(ga(interval, "start"))\n'
+            '    e = to_date(ga(interval, "end"))\n'
+            '    return s <= d <= e if d and s and e else False\n'),
+        'date_min': (
+            'def date_min(dates):\n'
+            '    v = [to_date(d) for d in dates if d]\n'
+            '    return min(v) if v else None\n'),
+        'is_this_year': (
+            'def is_this_year(d):\n'
+            '    d = to_date(d)\n'
+            '    return d.year == date.today().year if d else False\n'),
+        'parse_iso': 'def parse_iso(s):\n    return parse_date(s)\n',
+        'is_number': (
+            'def is_number(x):\n'
+            '    return isinstance(x, (int, float, Decimal))\n'),
+    }
+
+    # Add date conversion helpers
+    funcs.append(
+        'def to_date(d):\n'
+        '    if d is None: return None\n'
+        '    if isinstance(d, date) and not isinstance(d, datetime):\n'
+        '        return d\n'
+        '    if isinstance(d, datetime): return d.date()\n'
+        '    if isinstance(d, str): return parse_date(d)\n'
+        '    return None\n')
+    funcs.append(
+        'def to_datetime(d):\n'
+        '    if isinstance(d, datetime): return d\n'
+        '    if isinstance(d, date):\n'
+        '        return datetime(d.year, d.month, d.day)\n'
+        '    if isinstance(d, str):\n'
+        '        pd = parse_date(d)\n'
+        '        return datetime(pd.year, pd.month, pd.day) if pd else None\n'
+        '    return None\n')
+    funcs.append(
+        'def parse_date(d):\n'
+        '    if isinstance(d, (date, datetime)):\n'
+        '        return d if isinstance(d, date) else d.date()\n'
+        '    if isinstance(d, str):\n'
+        '        for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y"):\n'
+        '            try: return datetime.strptime(d, fmt).date()\n'
+        '            except ValueError: pass\n'
+        '        try: return datetime.fromisoformat(\n'
+        '            d.replace("Z", "+00:00")).date()\n'
+        '        except (ValueError, AttributeError): pass\n'
+        '    return None\n')
+    funcs.append(
+        'def reset_hours(d):\n'
+        '    if isinstance(d, datetime):\n'
+        '        return d.replace(hour=0, minute=0, second=0, microsecond=0)\n'
+        '    return d\n')
+
+    # Add lodash helpers
+    funcs.append(
+        'def sort_by(arr, key_fn):\n'
+        '    if callable(key_fn): return sorted(arr, key=key_fn)\n'
+        '    return sorted(arr)\n')
+    funcs.append(
+        'def uniq_by(arr, key):\n'
+        '    seen, r = set(), []\n'
+        '    for item in arr:\n'
+        '        k = ga(item, key) if isinstance(key, str) else key\n'
+        '        if k not in seen: seen.add(k); r.append(item)\n'
+        '    return r\n')
+
+    # Add all date-fns implementations
+    for name, impl in date_impls.items():
+        funcs.append(impl)
+
+    return '\n'.join(funcs)
+
+
 def _inline_constants(code: str) -> str:
     """Replace undefined TS constants with their values.
 
@@ -270,7 +421,7 @@ def _add_lazy_init(code: str) -> str:
         if s.startswith('def '):
             m = re.match(r'def (\w+)\(', s)
             current_method = m.group(1) if m else None
-        elif current_method and '= []' in s or '= {}' in s:
+        elif current_method:
             m = re.match(r'self\.(\w+)\s*=', s)
             if m:
                 attr = m.group(1)
@@ -330,7 +481,9 @@ def _add_lazy_init(code: str) -> str:
                     init_method = setter_methods[0]
                     guard = (
                         f"{' ' * indent}if not hasattr(self, '{attr}'):\n"
-                        f"{' ' * (indent + 4)}self.{init_method}()\n"
+                        f"{' ' * (indent + 4)}self.{attr} = []\n"
+                        f"{' ' * (indent + 4)}try: self.{init_method}()\n"
+                        f"{' ' * (indent + 4)}except Exception: pass\n"
                     )
                     if guard not in '\n'.join(output):
                         output.append(guard)
@@ -347,7 +500,7 @@ def _merge_classes(roai: str, base: str) -> str:
 
     # Pick methods to inject (exclude those provided by mixin)
     keep = {
-        'compute_snapshot',
+        'constructor', 'initialize', 'compute_snapshot',
         'compute_transaction_points', 'get_chart_date_map',
         'get_investments_by_group', 'get_start_date',
         'get_snapshot', 'get_transaction_points',

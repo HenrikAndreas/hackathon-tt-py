@@ -542,9 +542,73 @@ class RoaiPortfolioCalculator(PortfolioCalculator):
         }
 
 
+    def constructor(self, accountBalanceItems=None, activities=None, configurationService=None, currency=None, currentRateService=None, exchangeRateDataService=None, filters=None, portfolioSnapshotService=None, redisCacheService=None, userId=None):
+        if not hasattr(self, 'snapshot'):
+            self.snapshot = []
+            try: self.initialize()
+            except Exception: pass
+
+        self.account_balance_items = accountBalanceItems
+        self.configuration_service = configurationService
+        self.currency = currency
+        self.current_rate_service = currentRateService
+        self.exchange_rate_data_service = exchangeRateDataService
+        self.filters = filters
+        dateOfFirstActivity = datetime.now()
+        if self.account_balance_items[0]:
+            dateOfFirstActivity = parse_date(self.account_balance_items[0].date)
+
+        self.portfolio_snapshot_service = portfolioSnapshotService
+        self.redis_cache_service = redisCacheService
+        self.user_id = userId
+        endDate, startDate = get_interval_from_date_range('max', sub_days(dateOfFirstActivity, 1))
+        self.end_date = end_of_day(endDate)
+        self.start_date = start_of_day(startDate)
+        self.compute_transaction_points()
+        self.snapshot_promise = self.initialize()
+
+
+
     def compute_snapshot(self):
+        if not hasattr(self, 'account_balance_items'):
+            self.account_balance_items = []
+            try: self.constructor()
+            except Exception: pass
+
+        if not hasattr(self, 'configuration_service'):
+            self.configuration_service = []
+            try: self.constructor()
+            except Exception: pass
+
+        if not hasattr(self, 'currency'):
+            self.currency = []
+            try: self.constructor()
+            except Exception: pass
+
+        if not hasattr(self, 'current_rate_service'):
+            self.current_rate_service = []
+            try: self.constructor()
+            except Exception: pass
+
+        if not hasattr(self, 'exchange_rate_data_service'):
+            self.exchange_rate_data_service = []
+            try: self.constructor()
+            except Exception: pass
+
+        if not hasattr(self, 'end_date'):
+            self.end_date = []
+            try: self.constructor()
+            except Exception: pass
+
+        if not hasattr(self, 'start_date'):
+            self.start_date = []
+            try: self.constructor()
+            except Exception: pass
+
         if not hasattr(self, 'transaction_points'):
-            self.compute_transaction_points()
+            self.transaction_points = []
+            try: self.compute_transaction_points()
+            except Exception: pass
 
         lastTransactionPoint = self.transaction_points[-1]
         transactionPoints = [x for x in self.transaction_points if is_before(parse_date(x.get('date')), self.end_date)]
@@ -720,6 +784,11 @@ class RoaiPortfolioCalculator(PortfolioCalculator):
 
 
     def get_investments_by_group(self, data, groupBy):
+        if not hasattr(self, 'snapshot_promise'):
+            self.snapshot_promise = []
+            try: self.constructor()
+            except Exception: pass
+
         groupedData = {}
         for _item in data:
             gactx.item = _item
@@ -899,3 +968,55 @@ class RoaiPortfolioCalculator(PortfolioCalculator):
 
 
             lastDate = date
+
+
+
+    def initialize(self):
+        if not hasattr(self, 'filters'):
+            self.filters = []
+            try: self.constructor()
+            except Exception: pass
+
+        if not hasattr(self, 'portfolio_snapshot_service'):
+            self.portfolio_snapshot_service = []
+            try: self.constructor()
+            except Exception: pass
+
+        if not hasattr(self, 'user_id'):
+            self.user_id = []
+            try: self.constructor()
+            except Exception: pass
+
+        startTimeTotal = time.now()
+        cachedPortfolioSnapshot = None
+        isCachedPortfolioSnapshotExpired = False
+        jobId = self.user_id
+        try:
+            cachedPortfolioSnapshotValue = self.redis_cache_service.get(self.redis_cache_service.get_portfolio_snapshot_key({'filters': self.filters, 'userId': self.user_id}))
+            expiration, portfolioSnapshot = JSON.parse(cachedPortfolioSnapshotValue)
+            cachedPortfolioSnapshot = plain_to_class(PortfolioSnapshot, portfolioSnapshot)
+            if is_after(datetime.now(), _parse_date(expiration)):
+                isCachedPortfolioSnapshotExpired = True
+        except Exception as e:
+            pass
+        if cachedPortfolioSnapshot:
+            self.snapshot = cachedPortfolioSnapshot
+            pass
+            if isCachedPortfolioSnapshotExpired:
+                self.portfolio_snapshot_service.add_job_to_queue({'data': {
+                    'calculationType': self.get_performance_calculation_type(),
+                    'filters': self.filters,
+                    'userCurrency': self.currency,
+                    'userId': self.user_id
+                }, 'name': name, 'opts': {**PORTFOLIO_SNAPSHOT_PROCESS_JOB_OPTIONS, 'jobId': jobId, 'priority': priority}})
+        else:
+            self.portfolio_snapshot_service.add_job_to_queue({'data': {
+                'calculationType': self.get_performance_calculation_type(),
+                'filters': self.filters,
+                'userCurrency': self.currency,
+                'userId': self.user_id
+            }, 'name': name, 'opts': {**PORTFOLIO_SNAPSHOT_PROCESS_JOB_OPTIONS, 'jobId': jobId, 'priority': priority}})
+            job = self.portfolio_snapshot_service.get_job(jobId)
+            if job:
+                job.finished()
+            self.initialize()

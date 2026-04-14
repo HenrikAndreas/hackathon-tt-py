@@ -162,7 +162,11 @@ class PythonEmitter:
         func = node.value
         is_async = _get(func, 'async', False)
 
-        params = self._emit_params(_get(func, 'params', []))
+        # Constructor params should be optional (can be called with no args
+        # for lazy initialization)
+        is_ctor = (name == 'constructor')
+        params = self._emit_params(
+            _get(func, 'params', []), all_optional=is_ctor)
         if self._in_class:
             params = 'self' + (', ' + params if params else '')
 
@@ -1022,10 +1026,19 @@ class PythonEmitter:
 
     # --- Patterns (destructuring) ---
 
-    def _emit_params(self, params: list) -> str:
+    def _emit_params(self, params: list, all_optional: bool = False) -> str:
         parts = []
         for p in params:
-            parts.append(self._emit_pattern(p))
+            if _type(p) == 'ObjectPattern' and all_optional:
+                # Each destructured property becomes a separate optional param
+                for prop in p.properties:
+                    name = _name(prop.value) if prop.value else _name(prop.key)
+                    parts.append(f'{name}=None')
+            else:
+                pat = self._emit_pattern(p)
+                if all_optional and '=' not in pat:
+                    pat += '=None'
+                parts.append(pat)
         return ', '.join(parts)
 
     def _emit_pattern(self, node) -> str:
