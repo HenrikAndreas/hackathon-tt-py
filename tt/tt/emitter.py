@@ -279,20 +279,29 @@ class PythonEmitter:
         test = self._expr(node.test) if node.test else 'True'
         update = self._expr(node.update) if node.update else ''
 
-        # Try to convert simple for(let i=0; i<N; i++) to range()
-        if (init and '= 0' in init and '<' in test and '+= 1' in update):
-            var_name = init.split('=')[0].strip()
-            limit = test.split('<')[1].strip()
-            self._write(f'for {var_name} in range({limit}):')
-        else:
-            self._write(init)
-            self._write(f'while {test}:')
+        # Try to convert for(let i=0; i<N; i+=1) to for i in range(N)
+        import re as _re
+        range_match = _re.match(r'(\w+)\s*=\s*0', init) if init else None
+        limit_match = _re.match(r'\((\w+) < (.+)\)', test) if test else None
+        is_increment = '+= 1' in update
 
-        self._indent += 1
-        self._emit_block(node.body)
-        if update and 'while' in (self._lines[-2] if len(self._lines) > 1 else ''):
-            self._write(update)
-        self._indent -= 1
+        if range_match and limit_match and is_increment:
+            var_name = range_match.group(1)
+            limit = limit_match.group(2)
+            self._write(f'for {var_name} in range({limit}):')
+            self._indent += 1
+            self._emit_block(node.body)
+            self._indent -= 1
+        else:
+            # Fall back to while loop
+            if init:
+                self._write(init)
+            self._write(f'while {test}:')
+            self._indent += 1
+            self._emit_block(node.body)
+            if update:
+                self._write(update)
+            self._indent -= 1
 
     def _emit_ForInStatement(self, node):
         left = self._emit_pattern(_get(node, 'left').declarations[0].id) if _type(_get(node, 'left')) == 'VariableDeclaration' else self._expr(node.left)
@@ -441,6 +450,10 @@ class PythonEmitter:
 
     def _emit_Identifier(self, node):
         name = node.name
+        # Check for active substitutions (from inline predicate/transform)
+        subs = getattr(self, '_subs', {})
+        if name in subs:
+            return subs[name]
         # Map JS identifiers to Python
         mappings = {
             'undefined': 'None', 'null': 'None',
@@ -511,19 +524,19 @@ class PythonEmitter:
                 return f'({obj} > {args[0]}) - ({obj} < {args[0]})' if args else f'{obj}'
 
             # Array methods -> Python
+            raw_args = _get(node, 'arguments', [])
             if method == 'filter':
-                return self._emit_array_filter(obj, args)
+                return self._emit_array_filter(obj, args, raw_args)
             if method == 'map':
-                return self._emit_array_map(obj, args)
+                return self._emit_array_map(obj, args, raw_args)
             if method == 'reduce':
                 return self._emit_array_reduce(obj, args)
             if method == 'forEach':
-                # Will be handled as a statement
                 return f'# forEach: for item in {obj}: {args_str}'
             if method == 'find':
-                return self._emit_array_find(obj, args)
+                return self._emit_array_find(obj, args, raw_args)
             if method == 'findIndex':
-                return self._emit_array_find_index(obj, args)
+                return self._emit_array_find_index(obj, args, raw_args)
             if method == 'some':
                 return f'any({args[0]}(x) for x in {obj})' if args else f'bool({obj})'
             if method == 'every':
@@ -811,16 +824,16 @@ class PythonEmitter:
     def _emit_TemplateLiteral(self, node):
         parts = []
         for i, quasi in enumerate(node.quasis):
-            if isinstance(quasi.value, dict):
-                raw = quasi.value.get('cooked', quasi.value.get('raw', ''))
-            elif hasattr(quasi.value, 'cooked'):
-                raw = quasi.value.cooked or ''
-            elif hasattr(quasi.value, 'raw'):
-                raw = quasi.value.raw or ''
+            # esprima stores quasi.value as an object with .cooked and .raw
+            val = quasi.value
+            if hasattr(val, 'cooked'):
+                raw = val.cooked if val.cooked is not None else (val.raw if hasattr(val, 'raw') else '')
+            elif isinstance(val, dict):
+                raw = val.get('cooked', val.get('raw', ''))
             else:
-                raw = str(quasi.value) if quasi.value else ''
-            # Escape braces in the literal parts
-            raw = raw.replace('{', '{{').replace('}', '}}')
+                raw = str(val) if val else ''
+            # Escape braces and quotes in literal parts
+            raw = raw.replace('{', '{{').replace('}', '}}').replace('"', '\\"')
             if raw:
                 parts.append(raw)
             if i < len(node.expressions):
@@ -830,12 +843,25 @@ class PythonEmitter:
 
     # --- Array helper methods ---
 
-    def _emit_array_filter(self, obj: str, args: list[str]) -> str:
+    def _emit_array_filter(self, obj: str, args: list[str], raw_args=None) -> str:
+        """Translate .filter() to list comprehension."""
+        if raw_args and len(raw_args) == 1:
+            # Try to inline the arrow function
+            fn_node = raw_args[0]
+            cond = self._inline_predicate(fn_node, 'x')
+            if cond:
+                return f'[x for x in {obj} if {cond}]'
         if args:
             return f'[x for x in {obj} if {args[0]}(x)]'
         return obj
 
-    def _emit_array_map(self, obj: str, args: list[str]) -> str:
+    def _emit_array_map(self, obj: str, args: list[str], raw_args=None) -> str:
+        """Translate .map() to list comprehension."""
+        if raw_args and len(raw_args) == 1:
+            fn_node = raw_args[0]
+            expr = self._inline_transform(fn_node, 'x')
+            if expr:
+                return f'[{expr} for x in {obj}]'
         if args:
             return f'[{args[0]}(x) for x in {obj}]'
         return obj
@@ -847,15 +873,93 @@ class PythonEmitter:
             return f'functools.reduce({args[0]}, {obj})'
         return obj
 
-    def _emit_array_find(self, obj: str, args: list[str]) -> str:
+    def _emit_array_find(self, obj: str, args: list[str], raw_args=None) -> str:
+        if raw_args and len(raw_args) == 1:
+            cond = self._inline_predicate(raw_args[0], 'x')
+            if cond:
+                return f'next((x for x in {obj} if {cond}), None)'
         if args:
             return f'next((x for x in {obj} if {args[0]}(x)), None)'
         return f'next(iter({obj}), None)'
 
-    def _emit_array_find_index(self, obj: str, args: list[str]) -> str:
+    def _emit_array_find_index(self, obj: str, args: list[str], raw_args=None) -> str:
+        if raw_args and len(raw_args) == 1:
+            cond = self._inline_predicate(raw_args[0], 'x')
+            if cond:
+                return f'next((i for i, x in enumerate({obj}) if {cond}), -1)'
         if args:
             return f'next((i for i, x in enumerate({obj}) if {args[0]}(x)), -1)'
         return '-1'
+
+    def _inline_predicate(self, fn_node, var: str) -> str | None:
+        """Try to inline an arrow function as a predicate expression.
+
+        Handles: ({ prop }) => prop  →  x.get('prop')
+                 (x) => x.type === 'BUY'  →  x.get('type') == 'BUY'
+                 ({ prop }) => { return prop; }  →  x.get('prop')
+        """
+        ntype = _type(fn_node)
+        if ntype not in ('ArrowFunctionExpression', 'FunctionExpression'):
+            return None
+
+        params = _get(fn_node, 'params', [])
+        body = _get(fn_node, 'body')
+
+        # Get the parameter name(s) for substitution
+        param_names = []
+        destructured_props = []
+        for p in params:
+            pt = _type(p)
+            if pt == 'Identifier':
+                param_names.append(_name(p))
+            elif pt == 'ObjectPattern':
+                for prop in p.properties:
+                    prop_name = _name(prop.key) if hasattr(prop, 'key') else _name(prop.value)
+                    destructured_props.append(prop_name)
+
+        # Get body expression
+        if _type(body) == 'BlockStatement':
+            stmts = _get(body, 'body', [])
+            if len(stmts) == 1 and _type(stmts[0]) == 'ReturnStatement':
+                body = stmts[0].argument
+            else:
+                return None
+
+        # Simple destructured: ({ prop }) => prop  →  x.get('prop')
+        if len(destructured_props) == 1 and _type(body) == 'Identifier' and _name(body) == destructured_props[0]:
+            return f"{var}.get('{destructured_props[0]}')"
+
+        # Destructured with expression: ({ prop }) => expr using prop
+        if destructured_props:
+            # Replace prop references with x.get('prop') or x['prop']
+            expr = self._expr_with_substitution(body, {p: f"{var}.get('{p}')" for p in destructured_props})
+            if expr:
+                return expr
+
+        # Simple param: (item) => item.prop === 'value'
+        if len(param_names) == 1:
+            expr = self._expr_with_substitution(body, {param_names[0]: var})
+            if expr:
+                return expr
+
+        return None
+
+    def _inline_transform(self, fn_node, var: str) -> str | None:
+        """Try to inline an arrow/function as a map transform expression."""
+        return self._inline_predicate(fn_node, var)  # Same logic
+
+    def _expr_with_substitution(self, node, subs: dict[str, str]) -> str | None:
+        """Emit an expression, substituting identifiers per the subs dict."""
+        if node is None:
+            return None
+        # Save and restore: we temporarily modify how Identifiers are emitted
+        old_subs = getattr(self, '_subs', {})
+        self._subs = subs
+        try:
+            result = self._expr(node)
+            return result
+        finally:
+            self._subs = old_subs
 
     # --- Patterns (destructuring) ---
 

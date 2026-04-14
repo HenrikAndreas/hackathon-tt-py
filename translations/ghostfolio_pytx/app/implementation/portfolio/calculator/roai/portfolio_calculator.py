@@ -25,596 +25,981 @@ from app.implementation.portfolio.calculator.helpers import (
 
 class RoaiPortfolioCalculator(PortfolioCalculator):
 
-
-    # --- Interface methods (translated from base calculator) ---
-
-    def _build_market_symbol_map(self):
-        """Build market symbol map from current_rate_service."""
-        activities = self.sorted_activities()
-        if not activities:
-            return {}, set()
-
-        symbols = set()
-        for act in activities:
-            sym = act.get('symbol', '')
-            if sym:
-                symbols.add(sym)
-
-        first_date = min(a['date'] for a in activities)
-        today = date.today().isoformat()
-        all_dates = self.current_rate_service.all_dates_in_range(first_date, today)
-        all_dates.add(first_date)
-        all_dates.add(today)
-
-        market_map = {}
-        for d in sorted(all_dates):
-            market_map[d] = {}
-            for sym in symbols:
-                price = self.current_rate_service.get_price(sym, d)
-                if price is not None:
-                    market_map[d][sym] = Decimal(str(price))
-
-        return market_map, symbols
-
-    def _compute_transaction_points(self):
-        """Compute transaction points from activities (translated from base calculator)."""
-        activities = self.sorted_activities()
-        transaction_points = []
-        symbols = {}
-        last_date = None
-        last_tp = None
-
-        for act in activities:
-            act_date = act['date']
-            symbol = act.get('symbol', '')
-            act_type = act.get('type', '')
-            quantity = Decimal(str(act.get('quantity', 0)))
-            unit_price = Decimal(str(act.get('unitPrice', 0)))
-            fee = Decimal(str(act.get('fee', 0)))
-            data_source = act.get('dataSource', 'YAHOO')
-            currency = act.get('currency', 'USD')
-            factor = get_factor(act_type)
-
-            old = symbols.get(symbol)
-            if old:
-                investment = old['investment']
-                new_qty = quantity * factor + old['quantity']
-
-                if act_type == 'BUY':
-                    if old['investment'] >= 0:
-                        investment = old['investment'] + quantity * unit_price
-                    else:
-                        investment = old['investment'] + quantity * old['averagePrice']
-                elif act_type == 'SELL':
-                    if old['investment'] > 0:
-                        investment = old['investment'] - quantity * old['averagePrice']
-                    else:
-                        investment = old['investment'] - quantity * unit_price
-
-                if abs(new_qty) < Decimal('1e-10'):
-                    investment = Decimal('0')
-                    new_qty = Decimal('0')
-
-                avg_price = Decimal('0') if new_qty == 0 else abs(investment / new_qty)
-
-                current_item = {
-                    'symbol': symbol,
-                    'currency': currency,
-                    'dataSource': data_source,
-                    'quantity': new_qty,
-                    'investment': investment,
-                    'averagePrice': avg_price,
-                    'fee': old['fee'] + fee,
-                    'feeInBaseCurrency': old.get('feeInBaseCurrency', Decimal('0')) + fee,
-                    'dateOfFirstActivity': old['dateOfFirstActivity'],
-                    'activitiesCount': old['activitiesCount'] + 1,
-                    'assetSubClass': old.get('assetSubClass'),
-                    'includeInHoldings': old.get('includeInHoldings', True),
-                    'skipErrors': False,
-                    'tags': [],
-                }
+    def calculate_overall_performance(self, positions):
+        currentValueInBaseCurrency = Decimal(str(0))
+        grossPerformance = Decimal(str(0))
+        grossPerformanceWithCurrencyEffect = Decimal(str(0))
+        hasErrors = False
+        netPerformance = Decimal(str(0))
+        totalFeesWithCurrencyEffect = Decimal(str(0))
+        totalInterestWithCurrencyEffect = Decimal(str(0))
+        totalInvestment = Decimal(str(0))
+        totalInvestmentWithCurrencyEffect = Decimal(str(0))
+        totalTimeWeightedInvestment = Decimal(str(0))
+        totalTimeWeightedInvestmentWithCurrencyEffect = Decimal(str(0))
+        for currentPosition in [x for x in positions if x.get('includeInTotalAssetValue')]:
+            if currentPosition.feeInBaseCurrency:
+                totalFeesWithCurrencyEffect = (totalFeesWithCurrencyEffect + currentPosition.feeInBaseCurrency)
+            if currentPosition.valueInBaseCurrency:
+                currentValueInBaseCurrency = (currentValueInBaseCurrency + currentPosition.valueInBaseCurrency)
             else:
-                current_item = {
-                    'symbol': symbol,
-                    'currency': currency,
-                    'dataSource': data_source,
-                    'quantity': quantity * factor,
-                    'investment': unit_price * quantity * factor,
-                    'averagePrice': unit_price,
-                    'fee': fee,
-                    'feeInBaseCurrency': fee,
-                    'dateOfFirstActivity': act_date,
-                    'activitiesCount': 1,
-                    'assetSubClass': act.get('assetSubClass'),
-                    'includeInHoldings': act_type in ['BUY', 'DIVIDEND', 'SELL'],
-                    'skipErrors': False,
-                    'tags': [],
-                }
-
-            symbols[symbol] = current_item
-
-            new_items = [v for k, v in symbols.items()]
-            new_items.sort(key=lambda x: x.get('symbol', ''))
-
-            if last_date != act_date or last_tp is None:
-                last_tp = {'date': act_date, 'items': new_items}
-                transaction_points.append(last_tp)
+                hasErrors = True
+            if currentPosition.investment:
+                totalInvestment = (totalInvestment + currentPosition.investment)
+                totalInvestmentWithCurrencyEffect = (totalInvestmentWithCurrencyEffect + currentPosition.investmentWithCurrencyEffect)
             else:
-                last_tp['items'] = new_items
+                hasErrors = True
+            if currentPosition.grossPerformance:
+                grossPerformance = (grossPerformance + currentPosition.grossPerformance)
+                grossPerformanceWithCurrencyEffect = (grossPerformanceWithCurrencyEffect + currentPosition.grossPerformanceWithCurrencyEffect)
+                netPerformance = (netPerformance + currentPosition.netPerformance)
+            elif not (currentPosition.quantity == 0):
+                hasErrors = True
+            if currentPosition.timeWeightedInvestment:
+                totalTimeWeightedInvestment = (totalTimeWeightedInvestment + currentPosition.timeWeightedInvestment)
+                totalTimeWeightedInvestmentWithCurrencyEffect = (totalTimeWeightedInvestmentWithCurrencyEffect + currentPosition.timeWeightedInvestmentWithCurrencyEffect)
+            elif not (currentPosition.quantity == 0):
+                pass
+                hasErrors = True
+        return {
+            'currentValueInBaseCurrency': currentValueInBaseCurrency,
+            'hasErrors': hasErrors,
+            'positions': positions,
+            'totalFeesWithCurrencyEffect': totalFeesWithCurrencyEffect,
+            'totalInterestWithCurrencyEffect': totalInterestWithCurrencyEffect,
+            'totalInvestment': totalInvestment,
+            'totalInvestmentWithCurrencyEffect': totalInvestmentWithCurrencyEffect,
+            'activitiesCount': len([x for x in self.activities if (x.get('type') in ['BUY', 'SELL'])]),
+            'createdAt': datetime.now(),
+            'errors': [],
+            'historicalData': [],
+            'totalLiabilitiesWithCurrencyEffect': Decimal(str(0))
+        }
 
-            last_date = act_date
+    def get_performance_calculation_type(self):
+        return "ROAI"
 
-        return transaction_points
+    def get_symbol_metrics(self, chartDateMap, dataSource, end, exchangeRates, marketSymbolMap, start, symbol):
+        currentExchangeRate = exchangeRates[_date_format(datetime.now(), DATE_FORMAT)]
+        currentValues = {}
+        currentValuesWithCurrencyEffect = {}
+        fees = Decimal(str(0))
+        feesAtStartDate = Decimal(str(0))
+        feesAtStartDateWithCurrencyEffect = Decimal(str(0))
+        feesWithCurrencyEffect = Decimal(str(0))
+        grossPerformance = Decimal(str(0))
+        grossPerformanceWithCurrencyEffect = Decimal(str(0))
+        grossPerformanceAtStartDate = Decimal(str(0))
+        grossPerformanceAtStartDateWithCurrencyEffect = Decimal(str(0))
+        grossPerformanceFromSells = Decimal(str(0))
+        grossPerformanceFromSellsWithCurrencyEffect = Decimal(str(0))
+        initialValue = None
+        initialValueWithCurrencyEffect = None
+        investmentAtStartDate = None
+        investmentAtStartDateWithCurrencyEffect = None
+        investmentValuesAccumulated = {}
+        investmentValuesAccumulatedWithCurrencyEffect = {}
+        investmentValuesWithCurrencyEffect = {}
+        lastAveragePrice = Decimal(str(0))
+        lastAveragePriceWithCurrencyEffect = Decimal(str(0))
+        netPerformanceValues = {}
+        netPerformanceValuesWithCurrencyEffect = {}
+        timeWeightedInvestmentValues = {}
+        timeWeightedInvestmentValuesWithCurrencyEffect = {}
+        totalAccountBalanceInBaseCurrency = Decimal(str(0))
+        totalDividend = Decimal(str(0))
+        totalDividendInBaseCurrency = Decimal(str(0))
+        totalInterest = Decimal(str(0))
+        totalInterestInBaseCurrency = Decimal(str(0))
+        totalInvestment = Decimal(str(0))
+        totalInvestmentFromBuyTransactions = Decimal(str(0))
+        totalInvestmentFromBuyTransactionsWithCurrencyEffect = Decimal(str(0))
+        totalInvestmentWithCurrencyEffect = Decimal(str(0))
+        totalLiabilities = Decimal(str(0))
+        totalLiabilitiesInBaseCurrency = Decimal(str(0))
+        totalQuantityFromBuyTransactions = Decimal(str(0))
+        totalUnits = Decimal(str(0))
+        valueAtStartDate = None
+        valueAtStartDateWithCurrencyEffect = None
+        orders = copy.deepcopy([x for x in self.activities if (x.get('SymbolProfile').symbol == symbol)])
+        isCash = (orders[0].SymbolProfile.assetSubClass == 'CASH')
+        if (len(orders) <= 0):
+            return {
+                'currentValues': {},
+                'currentValuesWithCurrencyEffect': {},
+                'feesWithCurrencyEffect': Decimal(str(0)),
+                'grossPerformance': Decimal(str(0)),
+                'grossPerformancePercentage': Decimal(str(0)),
+                'grossPerformancePercentageWithCurrencyEffect': Decimal(str(0)),
+                'grossPerformanceWithCurrencyEffect': Decimal(str(0)),
+                'hasErrors': False,
+                'initialValue': Decimal(str(0)),
+                'initialValueWithCurrencyEffect': Decimal(str(0)),
+                'investmentValuesAccumulated': {},
+                'investmentValuesAccumulatedWithCurrencyEffect': {},
+                'investmentValuesWithCurrencyEffect': {},
+                'netPerformance': Decimal(str(0)),
+                'netPerformancePercentage': Decimal(str(0)),
+                'netPerformancePercentageWithCurrencyEffectMap': {},
+                'netPerformanceValues': {},
+                'netPerformanceValuesWithCurrencyEffect': {},
+                'netPerformanceWithCurrencyEffectMap': {},
+                'timeWeightedInvestment': Decimal(str(0)),
+                'timeWeightedInvestmentValues': {},
+                'timeWeightedInvestmentValuesWithCurrencyEffect': {},
+                'timeWeightedInvestmentWithCurrencyEffect': Decimal(str(0)),
+                'totalAccountBalanceInBaseCurrency': Decimal(str(0)),
+                'totalDividend': Decimal(str(0)),
+                'totalDividendInBaseCurrency': Decimal(str(0)),
+                'totalInterest': Decimal(str(0)),
+                'totalInterestInBaseCurrency': Decimal(str(0)),
+                'totalInvestment': Decimal(str(0)),
+                'totalInvestmentWithCurrencyEffect': Decimal(str(0)),
+                'totalLiabilities': Decimal(str(0)),
+                'totalLiabilitiesInBaseCurrency': Decimal(str(0))
+            }
+        dateOfFirstTransaction = _parse_date(orders[0].date)
+        endDateString = _date_format(end, DATE_FORMAT)
+        startDateString = _date_format(start, DATE_FORMAT)
+        unitPriceAtStartDate = marketSymbolMap[startDateString][symbol]
+        unitPriceAtEndDate = marketSymbolMap[endDateString][symbol]
+        latestActivity = orders[-1]
+        if ((((dataSource == 'MANUAL')  and  (latestActivity.type in ['BUY', 'SELL']))  and  latestActivity.unitPrice)  and  not unitPriceAtEndDate):
+            unitPriceAtEndDate = latestActivity.unitPrice
+        elif isCash:
+            unitPriceAtEndDate = Decimal(str(1))
+        if (not unitPriceAtEndDate  or  (not unitPriceAtStartDate  and  _is_before(dateOfFirstTransaction, start))):
+            return {
+                'currentValues': {},
+                'currentValuesWithCurrencyEffect': {},
+                'feesWithCurrencyEffect': Decimal(str(0)),
+                'grossPerformance': Decimal(str(0)),
+                'grossPerformancePercentage': Decimal(str(0)),
+                'grossPerformancePercentageWithCurrencyEffect': Decimal(str(0)),
+                'grossPerformanceWithCurrencyEffect': Decimal(str(0)),
+                'hasErrors': True,
+                'initialValue': Decimal(str(0)),
+                'initialValueWithCurrencyEffect': Decimal(str(0)),
+                'investmentValuesAccumulated': {},
+                'investmentValuesAccumulatedWithCurrencyEffect': {},
+                'investmentValuesWithCurrencyEffect': {},
+                'netPerformance': Decimal(str(0)),
+                'netPerformancePercentage': Decimal(str(0)),
+                'netPerformancePercentageWithCurrencyEffectMap': {},
+                'netPerformanceWithCurrencyEffectMap': {},
+                'netPerformanceValues': {},
+                'netPerformanceValuesWithCurrencyEffect': {},
+                'timeWeightedInvestment': Decimal(str(0)),
+                'timeWeightedInvestmentValues': {},
+                'timeWeightedInvestmentValuesWithCurrencyEffect': {},
+                'timeWeightedInvestmentWithCurrencyEffect': Decimal(str(0)),
+                'totalAccountBalanceInBaseCurrency': Decimal(str(0)),
+                'totalDividend': Decimal(str(0)),
+                'totalDividendInBaseCurrency': Decimal(str(0)),
+                'totalInterest': Decimal(str(0)),
+                'totalInterestInBaseCurrency': Decimal(str(0)),
+                'totalInvestment': Decimal(str(0)),
+                'totalInvestmentWithCurrencyEffect': Decimal(str(0)),
+                'totalLiabilities': Decimal(str(0)),
+                'totalLiabilitiesInBaseCurrency': Decimal(str(0))
+            }
+        orders.append({
+            'date': startDateString,
+            'fee': Decimal(str(0)),
+            'feeInBaseCurrency': Decimal(str(0)),
+            'itemType': 'start',
+            'quantity': Decimal(str(0)),
+            'SymbolProfile': {'dataSource': dataSource, 'symbol': symbol, 'assetSubClass': ('CASH' if isCash else None)},
+            'type': 'BUY',
+            'unitPrice': unitPriceAtStartDate
+        })
+        orders.append({
+            'date': endDateString,
+            'fee': Decimal(str(0)),
+            'feeInBaseCurrency': Decimal(str(0)),
+            'itemType': 'end',
+            'SymbolProfile': {'dataSource': dataSource, 'symbol': symbol, 'assetSubClass': ('CASH' if isCash else None)},
+            'quantity': Decimal(str(0)),
+            'type': 'BUY',
+            'unitPrice': unitPriceAtEndDate
+        })
+        lastUnitPrice = None
+        ordersByDate = {}
+        for order in orders:
+            ordersByDate[order.date] = (ordersByDate[order.date]  or  [])
+            ordersByDate[order.date].append(order)
+        if not self.chart_dates:
+            self.chart_dates = sorted(list(chartDateMap.keys()))
+        for dateString in self.chart_dates:
+            if (dateString < startDateString):
+                continue
+            elif (dateString > endDateString):
+                break
+            if (len(ordersByDate[dateString]) > 0):
+                for order in ordersByDate[dateString]:
+                    order.unitPriceFromMarketData = (marketSymbolMap[dateString][symbol]  or  lastUnitPrice)
+            else:
+                orders.append({
+                    'date': dateString,
+                    'fee': Decimal(str(0)),
+                    'feeInBaseCurrency': Decimal(str(0)),
+                    'quantity': Decimal(str(0)),
+                    'SymbolProfile': {'dataSource': dataSource, 'symbol': symbol, 'assetSubClass': ('CASH' if isCash else None)},
+                    'type': 'BUY',
+                    'unitPrice': (marketSymbolMap[dateString][symbol]  or  lastUnitPrice),
+                    'unitPriceFromMarketData': (marketSymbolMap[dateString][symbol]  or  lastUnitPrice)
+                })
+            latestActivity = orders[-1]
+            lastUnitPrice = (latestActivity.unitPriceFromMarketData  or  latestActivity.unitPrice)
 
-    def _compute_snapshot(self):
-        """Compute full portfolio snapshot (translated from base calculator)."""
-        transaction_points = self._compute_transaction_points()
-        if not transaction_points:
+        indexOfStartOrder = next((i for i, x in enumerate(orders) if (x.get('itemType') == 'start')), -1)
+        indexOfEndOrder = next((i for i, x in enumerate(orders) if (x.get('itemType') == 'end')), -1)
+        totalInvestmentDays = 0
+        sumOfTimeWeightedInvestments = Decimal(str(0))
+        sumOfTimeWeightedInvestmentsWithCurrencyEffect = Decimal(str(0))
+        for i in range(len(orders)):
+            order = orders[i]
+            if PortfolioCalculator.ENABLE_LOGGING:
+                print.log()
+                print.log()
+                print.log((i + 1), order.date, order.type, (f"({order.itemType})" if order.itemType else ''))
+            exchangeRateAtOrderDate = exchangeRates[order.date]
+            if (order.type == 'DIVIDEND'):
+                dividend = (order.quantity * order.unitPrice)
+                totalDividend = (totalDividend + dividend)
+                totalDividendInBaseCurrency = (totalDividendInBaseCurrency + (dividend * (exchangeRateAtOrderDate  or  1)))
+            elif (order.type == 'INTEREST'):
+                interest = (order.quantity * order.unitPrice)
+                totalInterest = (totalInterest + interest)
+                totalInterestInBaseCurrency = (totalInterestInBaseCurrency + (interest * (exchangeRateAtOrderDate  or  1)))
+            elif (order.type == 'LIABILITY'):
+                liabilities = (order.quantity * order.unitPrice)
+                totalLiabilities = (totalLiabilities + liabilities)
+                totalLiabilitiesInBaseCurrency = (totalLiabilitiesInBaseCurrency + (liabilities * (exchangeRateAtOrderDate  or  1)))
+            if (order.itemType == 'start'):
+                order.unitPrice = (orders[(i + 1)].unitPrice if (indexOfStartOrder == 0) else unitPriceAtStartDate)
+            if order.fee:
+                order.feeInBaseCurrency = (order.fee * (currentExchangeRate  or  1))
+                order.feeInBaseCurrencyWithCurrencyEffect = (order.fee * (exchangeRateAtOrderDate  or  1))
+            unitPrice = (order.unitPrice if (order.type in ['BUY', 'SELL']) else order.unitPriceFromMarketData)
+            if unitPrice:
+                order.unitPriceInBaseCurrency = (unitPrice * (currentExchangeRate  or  1))
+                order.unitPriceInBaseCurrencyWithCurrencyEffect = (unitPrice * (exchangeRateAtOrderDate  or  1))
+            marketPriceInBaseCurrency = ((order.unitPriceFromMarketData * (currentExchangeRate  or  1))  or  Decimal(str(0)))
+            marketPriceInBaseCurrencyWithCurrencyEffect = ((order.unitPriceFromMarketData * (exchangeRateAtOrderDate  or  1))  or  Decimal(str(0)))
+            valueOfInvestmentBeforeTransaction = (totalUnits * marketPriceInBaseCurrency)
+            valueOfInvestmentBeforeTransactionWithCurrencyEffect = (totalUnits * marketPriceInBaseCurrencyWithCurrencyEffect)
+            if (not investmentAtStartDate  and  (i >= indexOfStartOrder)):
+                investmentAtStartDate = (totalInvestment  or  Decimal(str(0)))
+                investmentAtStartDateWithCurrencyEffect = (totalInvestmentWithCurrencyEffect  or  Decimal(str(0)))
+                valueAtStartDate = valueOfInvestmentBeforeTransaction
+                valueAtStartDateWithCurrencyEffect = valueOfInvestmentBeforeTransactionWithCurrencyEffect
+            transactionInvestment = Decimal(str(0))
+            transactionInvestmentWithCurrencyEffect = Decimal(str(0))
+            if (order.type == 'BUY'):
+                transactionInvestment = ((order.quantity * order.unitPriceInBaseCurrency) * getFactor(order.type))
+                transactionInvestmentWithCurrencyEffect = ((order.quantity * order.unitPriceInBaseCurrencyWithCurrencyEffect) * getFactor(order.type))
+                totalQuantityFromBuyTransactions = (totalQuantityFromBuyTransactions + order.quantity)
+                totalInvestmentFromBuyTransactions = (totalInvestmentFromBuyTransactions + transactionInvestment)
+                totalInvestmentFromBuyTransactionsWithCurrencyEffect = (totalInvestmentFromBuyTransactionsWithCurrencyEffect + transactionInvestmentWithCurrencyEffect)
+            elif (order.type == 'SELL'):
+                if (totalUnits > 0):
+                    transactionInvestment = (((totalInvestment / totalUnits) * order.quantity) * getFactor(order.type))
+                    transactionInvestmentWithCurrencyEffect = (((totalInvestmentWithCurrencyEffect / totalUnits) * order.quantity) * getFactor(order.type))
+            if PortfolioCalculator.ENABLE_LOGGING:
+                print.log('order.quantity', float(order.quantity))
+                print.log('transactionInvestment', float(transactionInvestment))
+                print.log('transactionInvestmentWithCurrencyEffect', float(transactionInvestmentWithCurrencyEffect))
+            totalInvestmentBeforeTransaction = totalInvestment
+            totalInvestmentBeforeTransactionWithCurrencyEffect = totalInvestmentWithCurrencyEffect
+            totalInvestment = (totalInvestment + transactionInvestment)
+            totalInvestmentWithCurrencyEffect = (totalInvestmentWithCurrencyEffect + transactionInvestmentWithCurrencyEffect)
+            if ((i >= indexOfStartOrder)  and  not initialValue):
+                if ((i == indexOfStartOrder)  and  not (valueOfInvestmentBeforeTransaction == 0)):
+                    initialValue = valueOfInvestmentBeforeTransaction
+                    initialValueWithCurrencyEffect = valueOfInvestmentBeforeTransactionWithCurrencyEffect
+                elif (transactionInvestment > 0):
+                    initialValue = transactionInvestment
+                    initialValueWithCurrencyEffect = transactionInvestmentWithCurrencyEffect
+            fees = (fees + (order.feeInBaseCurrency  or  0))
+            feesWithCurrencyEffect = (feesWithCurrencyEffect + (order.feeInBaseCurrencyWithCurrencyEffect  or  0))
+            totalUnits = (totalUnits + (order.quantity * getFactor(order.type)))
+            valueOfInvestment = (totalUnits * marketPriceInBaseCurrency)
+            valueOfInvestmentWithCurrencyEffect = (totalUnits * marketPriceInBaseCurrencyWithCurrencyEffect)
+            grossPerformanceFromSell = (((order.unitPriceInBaseCurrency - lastAveragePrice) * order.quantity) if (order.type == 'SELL') else Decimal(str(0)))
+            grossPerformanceFromSellWithCurrencyEffect = (((order.unitPriceInBaseCurrencyWithCurrencyEffect - lastAveragePriceWithCurrencyEffect) * order.quantity) if (order.type == 'SELL') else Decimal(str(0)))
+            grossPerformanceFromSells = (grossPerformanceFromSells + grossPerformanceFromSell)
+            grossPerformanceFromSellsWithCurrencyEffect = (grossPerformanceFromSellsWithCurrencyEffect + grossPerformanceFromSellWithCurrencyEffect)
+            lastAveragePrice = (Decimal(str(0)) if (totalQuantityFromBuyTransactions == 0) else (totalInvestmentFromBuyTransactions / totalQuantityFromBuyTransactions))
+            lastAveragePriceWithCurrencyEffect = (Decimal(str(0)) if (totalQuantityFromBuyTransactions == 0) else (totalInvestmentFromBuyTransactionsWithCurrencyEffect / totalQuantityFromBuyTransactions))
+            if (totalUnits == 0):
+                totalInvestmentFromBuyTransactions = Decimal(str(0))
+                totalInvestmentFromBuyTransactionsWithCurrencyEffect = Decimal(str(0))
+                totalQuantityFromBuyTransactions = Decimal(str(0))
+            if PortfolioCalculator.ENABLE_LOGGING:
+                print.log('grossPerformanceFromSells', float(grossPerformanceFromSells))
+                print.log('grossPerformanceFromSellWithCurrencyEffect', float(grossPerformanceFromSellWithCurrencyEffect))
+            newGrossPerformance = ((valueOfInvestment - totalInvestment) + grossPerformanceFromSells)
+            newGrossPerformanceWithCurrencyEffect = ((valueOfInvestmentWithCurrencyEffect - totalInvestmentWithCurrencyEffect) + grossPerformanceFromSellsWithCurrencyEffect)
+            grossPerformance = newGrossPerformance
+            grossPerformanceWithCurrencyEffect = newGrossPerformanceWithCurrencyEffect
+            if (order.itemType == 'start'):
+                feesAtStartDate = fees
+                feesAtStartDateWithCurrencyEffect = feesWithCurrencyEffect
+                grossPerformanceAtStartDate = grossPerformance
+                grossPerformanceAtStartDateWithCurrencyEffect = grossPerformanceWithCurrencyEffect
+            if (i > indexOfStartOrder):
+                if ((valueOfInvestmentBeforeTransaction > 0)  and  (order.type in ['BUY', 'SELL'])):
+                    orderDate = _parse_date(order.date)
+                    previousOrderDate = _parse_date(orders[(i - 1)].date)
+                    daysSinceLastOrder = _difference_in_days(orderDate, previousOrderDate)
+                    if (daysSinceLastOrder <= 0):
+                        daysSinceLastOrder = float_info.epsilon
+                    totalInvestmentDays += daysSinceLastOrder
+                    sumOfTimeWeightedInvestments = (sumOfTimeWeightedInvestments + (((valueAtStartDate - investmentAtStartDate) + totalInvestmentBeforeTransaction) * daysSinceLastOrder))
+                    sumOfTimeWeightedInvestmentsWithCurrencyEffect = (sumOfTimeWeightedInvestmentsWithCurrencyEffect + (((valueAtStartDateWithCurrencyEffect - investmentAtStartDateWithCurrencyEffect) + totalInvestmentBeforeTransactionWithCurrencyEffect) * daysSinceLastOrder))
+                currentValues[order.date] = valueOfInvestment
+                currentValuesWithCurrencyEffect[order.date] = valueOfInvestmentWithCurrencyEffect
+                netPerformanceValues[order.date] = ((grossPerformance - grossPerformanceAtStartDate) - (fees - feesAtStartDate))
+                netPerformanceValuesWithCurrencyEffect[order.date] = ((grossPerformanceWithCurrencyEffect - grossPerformanceAtStartDateWithCurrencyEffect) - (feesWithCurrencyEffect - feesAtStartDateWithCurrencyEffect))
+                investmentValuesAccumulated[order.date] = totalInvestment
+                investmentValuesAccumulatedWithCurrencyEffect[order.date] = totalInvestmentWithCurrencyEffect
+                investmentValuesWithCurrencyEffect[order.date] = ((investmentValuesWithCurrencyEffect[order.date]  or  Decimal(str(0))) + transactionInvestmentWithCurrencyEffect)
+                timeWeightedInvestmentValues[order.date] = ((sumOfTimeWeightedInvestments / totalInvestmentDays) if (totalInvestmentDays > float_info.epsilon) else (totalInvestment if (totalInvestment > 0) else Decimal(str(0))))
+                timeWeightedInvestmentValuesWithCurrencyEffect[order.date] = ((sumOfTimeWeightedInvestmentsWithCurrencyEffect / totalInvestmentDays) if (totalInvestmentDays > float_info.epsilon) else (totalInvestmentWithCurrencyEffect if (totalInvestmentWithCurrencyEffect > 0) else Decimal(str(0))))
+            if PortfolioCalculator.ENABLE_LOGGING:
+                print.log('totalInvestment', float(totalInvestment))
+                print.log('totalInvestmentWithCurrencyEffect', float(totalInvestmentWithCurrencyEffect))
+                print.log('totalGrossPerformance', float((grossPerformance - grossPerformanceAtStartDate)))
+                print.log('totalGrossPerformanceWithCurrencyEffect', float((grossPerformanceWithCurrencyEffect - grossPerformanceAtStartDateWithCurrencyEffect)))
+            if (i == indexOfEndOrder):
+                break
+        totalGrossPerformance = (grossPerformance - grossPerformanceAtStartDate)
+        totalGrossPerformanceWithCurrencyEffect = (grossPerformanceWithCurrencyEffect - grossPerformanceAtStartDateWithCurrencyEffect)
+        totalNetPerformance = ((grossPerformance - grossPerformanceAtStartDate) - (fees - feesAtStartDate))
+        timeWeightedAverageInvestmentBetweenStartAndEndDate = ((sumOfTimeWeightedInvestments / totalInvestmentDays) if (totalInvestmentDays > 0) else Decimal(str(0)))
+        timeWeightedAverageInvestmentBetweenStartAndEndDateWithCurrencyEffect = ((sumOfTimeWeightedInvestmentsWithCurrencyEffect / totalInvestmentDays) if (totalInvestmentDays > 0) else Decimal(str(0)))
+        grossPerformancePercentage = ((totalGrossPerformance / timeWeightedAverageInvestmentBetweenStartAndEndDate) if (timeWeightedAverageInvestmentBetweenStartAndEndDate > 0) else Decimal(str(0)))
+        grossPerformancePercentageWithCurrencyEffect = ((totalGrossPerformanceWithCurrencyEffect / timeWeightedAverageInvestmentBetweenStartAndEndDateWithCurrencyEffect) if (timeWeightedAverageInvestmentBetweenStartAndEndDateWithCurrencyEffect > 0) else Decimal(str(0)))
+        feesPerUnit = (((fees - feesAtStartDate) / totalUnits) if (totalUnits > 0) else Decimal(str(0)))
+        feesPerUnitWithCurrencyEffect = (((feesWithCurrencyEffect - feesAtStartDateWithCurrencyEffect) / totalUnits) if (totalUnits > 0) else Decimal(str(0)))
+        netPerformancePercentage = ((totalNetPerformance / timeWeightedAverageInvestmentBetweenStartAndEndDate) if (timeWeightedAverageInvestmentBetweenStartAndEndDate > 0) else Decimal(str(0)))
+        netPerformancePercentageWithCurrencyEffectMap = {}
+        netPerformanceWithCurrencyEffectMap = {}
+        for dateRange in ['1d', '1y', '5y', 'max', 'mtd', 'wtd', 'ytd']:
+            dateInterval = getIntervalFromDateRange(dateRange)
+            endDate = dateInterval.endDate
+            startDate = dateInterval.startDate
+            if _is_before(startDate, start):
+                startDate = start
+            rangeEndDateString = _date_format(endDate, DATE_FORMAT)
+            rangeStartDateString = _date_format(startDate, DATE_FORMAT)
+            currentValuesAtDateRangeStartWithCurrencyEffect = (currentValuesWithCurrencyEffect[rangeStartDateString]  or  Decimal(str(0)))
+            investmentValuesAccumulatedAtStartDateWithCurrencyEffect = (investmentValuesAccumulatedWithCurrencyEffect[rangeStartDateString]  or  Decimal(str(0)))
+            grossPerformanceAtDateRangeStartWithCurrencyEffect = (currentValuesAtDateRangeStartWithCurrencyEffect - investmentValuesAccumulatedAtStartDateWithCurrencyEffect)
+            average = Decimal(str(0))
+            dayCount = 0
+            i = (len(self.chart_dates) - 1)
+            while (i >= 0):
+                date = self.chart_dates[i]
+                if (date > rangeEndDateString):
+                    continue
+                elif (date < rangeStartDateString):
+                    break
+                if (isinstance(investmentValuesAccumulatedWithCurrencyEffect[date], Big)  and  (investmentValuesAccumulatedWithCurrencyEffect[date] > 0)):
+                    average = (average + (investmentValuesAccumulatedWithCurrencyEffect[date] + grossPerformanceAtDateRangeStartWithCurrencyEffect))
+                    dayCount += 1
+                i -= 1
+            if (dayCount > 0):
+                average = (average / dayCount)
+            netPerformanceWithCurrencyEffectMap[dateRange] = ((netPerformanceValuesWithCurrencyEffect[rangeEndDateString] - (Decimal(str(0)) if (dateRange == 'max') else (netPerformanceValuesWithCurrencyEffect[rangeStartDateString]  or  Decimal(str(0)))))  or  Decimal(str(0)))
+            netPerformancePercentageWithCurrencyEffectMap[dateRange] = ((netPerformanceWithCurrencyEffectMap[dateRange] / average) if (average > 0) else Decimal(str(0)))
+        if PortfolioCalculator.ENABLE_LOGGING:
+            pass
+
+        {symbol}
+
+
+
+
+
+
+
+
+
+
+
+
+        return {
+            'currentValues': currentValues,
+            'currentValuesWithCurrencyEffect': currentValuesWithCurrencyEffect,
+            'feesWithCurrencyEffect': feesWithCurrencyEffect,
+            'grossPerformancePercentage': grossPerformancePercentage,
+            'grossPerformancePercentageWithCurrencyEffect': grossPerformancePercentageWithCurrencyEffect,
+            'initialValue': initialValue,
+            'initialValueWithCurrencyEffect': initialValueWithCurrencyEffect,
+            'investmentValuesAccumulated': investmentValuesAccumulated,
+            'investmentValuesAccumulatedWithCurrencyEffect': investmentValuesAccumulatedWithCurrencyEffect,
+            'investmentValuesWithCurrencyEffect': investmentValuesWithCurrencyEffect,
+            'netPerformancePercentage': netPerformancePercentage,
+            'netPerformancePercentageWithCurrencyEffectMap': netPerformancePercentageWithCurrencyEffectMap,
+            'netPerformanceValues': netPerformanceValues,
+            'netPerformanceValuesWithCurrencyEffect': netPerformanceValuesWithCurrencyEffect,
+            'netPerformanceWithCurrencyEffectMap': netPerformanceWithCurrencyEffectMap,
+            'timeWeightedInvestmentValues': timeWeightedInvestmentValues,
+            'timeWeightedInvestmentValuesWithCurrencyEffect': timeWeightedInvestmentValuesWithCurrencyEffect,
+            'totalAccountBalanceInBaseCurrency': totalAccountBalanceInBaseCurrency,
+            'totalDividend': totalDividend,
+            'totalDividendInBaseCurrency': totalDividendInBaseCurrency,
+            'totalInterest': totalInterest,
+            'totalInterestInBaseCurrency': totalInterestInBaseCurrency,
+            'totalInvestment': totalInvestment,
+            'totalInvestmentWithCurrencyEffect': totalInvestmentWithCurrencyEffect,
+            'totalLiabilities': totalLiabilities,
+            'totalLiabilitiesInBaseCurrency': totalLiabilitiesInBaseCurrency,
+            'grossPerformance': totalGrossPerformance,
+            'grossPerformanceWithCurrencyEffect': totalGrossPerformanceWithCurrencyEffect,
+            'hasErrors': ((totalUnits > 0)  and  (not initialValue  or  not unitPriceAtEndDate)),
+            'netPerformance': totalNetPerformance,
+            'timeWeightedInvestment': timeWeightedAverageInvestmentBetweenStartAndEndDate,
+            'timeWeightedInvestmentWithCurrencyEffect': timeWeightedAverageInvestmentBetweenStartAndEndDateWithCurrencyEffect
+        }
+
+    def compute_snapshot(self):
+        lastTransactionPoint = self.transaction_points[-1]
+        transactionPoints = [x for x in self.transaction_points if _is_before(parseDate(x.get('date')), self.end_date)]
+        if not len(transactionPoints):
             return {
                 'activitiesCount': 0,
-                'currentValueInBaseCurrency': Decimal('0'),
+                'createdAt': datetime.now(),
+                'currentValueInBaseCurrency': Decimal(str(0)),
                 'errors': [],
                 'hasErrors': False,
                 'historicalData': [],
                 'positions': [],
-                'totalFeesWithCurrencyEffect': Decimal('0'),
-                'totalInterestWithCurrencyEffect': Decimal('0'),
-                'totalInvestment': Decimal('0'),
-                'totalInvestmentWithCurrencyEffect': Decimal('0'),
-                'totalLiabilitiesWithCurrencyEffect': Decimal('0'),
+                'totalFeesWithCurrencyEffect': Decimal(str(0)),
+                'totalInterestWithCurrencyEffect': Decimal(str(0)),
+                'totalInvestment': Decimal(str(0)),
+                'totalInvestmentWithCurrencyEffect': Decimal(str(0)),
+                'totalLiabilitiesWithCurrencyEffect': Decimal(str(0))
             }
+        currencies = {}
+        dataGatheringItems = []
+        firstIndex = len(transactionPoints)
+        firstTransactionPoint = None
+        totalInterestWithCurrencyEffect = Decimal(str(0))
+        totalLiabilitiesWithCurrencyEffect = Decimal(str(0))
+        for assetSubClass, currency, dataSource, symbol in transactionPoints[(firstIndex - 1)].items:
+            if (assetSubClass != 'CASH'):
+                dataGatheringItems.append({'dataSource': dataSource, 'symbol': symbol})
+            currencies[symbol] = currency
+        for i in range(len(transactionPoints)):
+            if (not _is_before(parseDate(transactionPoints[i].date), self.start_date)  and  (firstTransactionPoint == None)):
+                firstTransactionPoint = transactionPoints[i]
+                firstIndex = i
 
-        market_map, all_symbols = self._build_market_symbol_map()
-        last_tp = transaction_points[-1]
-        today = date.today().isoformat()
 
-        first_date = transaction_points[0]['date']
-        interval = get_interval_from_date_range('max', first_date)
-        start_date = interval['start_date']
-        end_date = interval['end_date']
-        start_str = start_date.isoformat() if hasattr(start_date, 'isoformat') else str(start_date)
-        end_str = end_date.isoformat() if hasattr(end_date, 'isoformat') else str(end_date)
 
-        # Build chart date map
-        chart_date_map = {}
-        for tp in transaction_points:
-            chart_date_map[tp['date']] = True
-        for d in sorted(market_map.keys()):
-            if start_str <= d <= end_str:
-                chart_date_map[d] = True
-        chart_date_map[end_str] = True
 
-        # Exchange rates: 1.0 for single-currency
-        exchange_rates = {}
-        for d in sorted(chart_date_map.keys()):
-            exchange_rates[d] = 1.0
 
+
+
+        self.data_provider_infos = dataProviderInfos
+        marketSymbolMap = {}
+        for marketSymbol in marketSymbols:
+            date = _date_format(marketSymbol.date, DATE_FORMAT)
+            if not marketSymbolMap[date]:
+                marketSymbolMap[date] = {}
+            if marketSymbol.marketPrice:
+                marketSymbolMap[date][marketSymbol.symbol] = Decimal(str(marketSymbol.marketPrice))
+        endDateString = _date_format(self.end_date, DATE_FORMAT)
+        daysInMarket = _difference_in_days(self.end_date, self.start_date)
+        chartDateMap = self.get_chart_date_map({'endDate': self.end_date, 'startDate': self.start_date, 'step': Math.round((daysInMarket / _date_min(daysInMarket, self.configuration_service.get('MAX_CHART_ITEMS'))))})
+        for accountBalanceItem in self.account_balance_items:
+            chartDateMap[accountBalanceItem.date] = True
+        chartDates = _sort_by(list(chartDateMap.keys()), lambda chartDate: chartDate)
+        if (firstIndex > 0):
+            firstIndex -= 1
+        errors = []
+        hasAnySymbolMetricsErrors = False
         positions = []
-        values_by_symbol = {}
-        has_any_errors = False
-
-        for item in last_tp['items']:
-            sym = item['symbol']
-            result = self.get_symbol_metrics(
-                chartDateMap=chart_date_map,
-                dataSource=item.get('dataSource', 'YAHOO'),
-                end=end_date,
-                exchangeRates=exchange_rates,
-                marketSymbolMap=market_map,
-                start=start_date,
-                symbol=sym,
-            )
-
-            if isinstance(result, dict):
-                has_errors = result.get('hasErrors', False)
-                has_any_errors = has_any_errors or has_errors
-
-                # Get market price
-                market_price = Decimal('0')
-                if end_str in market_map and sym in market_map[end_str]:
-                    market_price = market_map[end_str][sym]
-                elif not market_price:
-                    market_price = Decimal(str(
-                        self.current_rate_service.get_latest_price(sym) or 0
-                    ))
-
-                total_investment = result.get('totalInvestment', Decimal('0'))
-                net_perf = result.get('netPerformance', Decimal('0'))
-                gross_perf = result.get('grossPerformance', Decimal('0'))
-
-                position = {
-                    'symbol': sym,
-                    'currency': item.get('currency', 'USD'),
-                    'dataSource': item.get('dataSource', 'YAHOO'),
-                    'quantity': item['quantity'],
-                    'investment': total_investment,
-                    'investmentWithCurrencyEffect': result.get('totalInvestmentWithCurrencyEffect', total_investment),
-                    'marketPrice': float(market_price),
-                    'marketPriceInBaseCurrency': float(market_price),
-                    'valueInBaseCurrency': market_price * item['quantity'],
-                    'grossPerformance': gross_perf if not has_errors else None,
-                    'grossPerformanceWithCurrencyEffect': result.get('grossPerformanceWithCurrencyEffect', gross_perf) if not has_errors else None,
-                    'grossPerformancePercentage': result.get('grossPerformancePercentage', Decimal('0')) if not has_errors else None,
-                    'grossPerformancePercentageWithCurrencyEffect': result.get('grossPerformancePercentageWithCurrencyEffect', Decimal('0')) if not has_errors else None,
-                    'netPerformance': net_perf if not has_errors else None,
-                    'netPerformancePercentage': result.get('netPerformancePercentage', Decimal('0')) if not has_errors else None,
-                    'netPerformancePercentageWithCurrencyEffectMap': result.get('netPerformancePercentageWithCurrencyEffectMap', {}) if not has_errors else None,
-                    'netPerformanceWithCurrencyEffectMap': result.get('netPerformanceWithCurrencyEffectMap', {}) if not has_errors else None,
-                    'fee': item.get('fee', Decimal('0')),
-                    'feeInBaseCurrency': item.get('feeInBaseCurrency', Decimal('0')),
-                    'dividend': result.get('totalDividend', Decimal('0')),
-                    'dividendInBaseCurrency': result.get('totalDividendInBaseCurrency', Decimal('0')),
-                    'dateOfFirstActivity': item.get('dateOfFirstActivity'),
-                    'activitiesCount': item.get('activitiesCount', 0),
-                    'averagePrice': item.get('averagePrice', Decimal('0')),
-                    'timeWeightedInvestment': result.get('timeWeightedInvestment', Decimal('0')),
-                    'timeWeightedInvestmentWithCurrencyEffect': result.get('timeWeightedInvestmentWithCurrencyEffect', Decimal('0')),
-                    'includeInTotalAssetValue': item.get('assetSubClass') != 'CASH',
-                    'tags': item.get('tags', []),
-                }
-                positions.append(position)
-
-                values_by_symbol[sym] = {
-                    'currentValues': result.get('currentValues', {}),
-                    'currentValuesWithCurrencyEffect': result.get('currentValuesWithCurrencyEffect', {}),
-                    'investmentValuesAccumulated': result.get('investmentValuesAccumulated', {}),
-                    'investmentValuesAccumulatedWithCurrencyEffect': result.get('investmentValuesAccumulatedWithCurrencyEffect', {}),
-                    'investmentValuesWithCurrencyEffect': result.get('investmentValuesWithCurrencyEffect', {}),
-                    'netPerformanceValues': result.get('netPerformanceValues', {}),
-                    'netPerformanceValuesWithCurrencyEffect': result.get('netPerformanceValuesWithCurrencyEffect', {}),
-                    'timeWeightedInvestmentValues': result.get('timeWeightedInvestmentValues', {}),
-                    'timeWeightedInvestmentValuesWithCurrencyEffect': result.get('timeWeightedInvestmentValuesWithCurrencyEffect', {}),
-                }
-
-        # Build historical data
-        chart_dates = sorted(chart_date_map.keys())
-        accumulated = {}
-        for d in chart_dates:
-            if d < start_str or d > end_str:
-                continue
-            for sym, sv in values_by_symbol.items():
-                cv = sv['currentValues'].get(d, Decimal('0'))
-                cv_ce = sv['currentValuesWithCurrencyEffect'].get(d, Decimal('0'))
-                iv = sv['investmentValuesAccumulated'].get(d, Decimal('0'))
-                iv_ce = sv['investmentValuesAccumulatedWithCurrencyEffect'].get(d, Decimal('0'))
-                inv_ce = sv['investmentValuesWithCurrencyEffect'].get(d, Decimal('0'))
-                np_val = sv['netPerformanceValues'].get(d, Decimal('0'))
-                np_ce = sv['netPerformanceValuesWithCurrencyEffect'].get(d, Decimal('0'))
-                twi = sv['timeWeightedInvestmentValues'].get(d, Decimal('0'))
-                twi_ce = sv['timeWeightedInvestmentValuesWithCurrencyEffect'].get(d, Decimal('0'))
-
-                if d not in accumulated:
-                    accumulated[d] = {
-                        'totalCurrentValue': Decimal('0'),
-                        'totalCurrentValueWithCurrencyEffect': Decimal('0'),
-                        'totalInvestmentValue': Decimal('0'),
-                        'totalInvestmentValueWithCurrencyEffect': Decimal('0'),
-                        'investmentValueWithCurrencyEffect': Decimal('0'),
-                        'totalNetPerformanceValue': Decimal('0'),
-                        'totalNetPerformanceValueWithCurrencyEffect': Decimal('0'),
-                        'totalTimeWeightedInvestmentValue': Decimal('0'),
-                        'totalTimeWeightedInvestmentValueWithCurrencyEffect': Decimal('0'),
-                    }
-                acc = accumulated[d]
-                acc['totalCurrentValue'] += cv
-                acc['totalCurrentValueWithCurrencyEffect'] += cv_ce
-                acc['totalInvestmentValue'] += iv
-                acc['totalInvestmentValueWithCurrencyEffect'] += iv_ce
-                acc['investmentValueWithCurrencyEffect'] += inv_ce
-                acc['totalNetPerformanceValue'] += np_val
-                acc['totalNetPerformanceValueWithCurrencyEffect'] += np_ce
-                acc['totalTimeWeightedInvestmentValue'] += twi
-                acc['totalTimeWeightedInvestmentValueWithCurrencyEffect'] += twi_ce
-
-        historical_data = []
-        for d in sorted(accumulated.keys()):
-            v = accumulated[d]
-            twi_val = v['totalTimeWeightedInvestmentValue']
-            twi_ce_val = v['totalTimeWeightedInvestmentValueWithCurrencyEffect']
-            np_pct = 0 if twi_val == 0 else float(v['totalNetPerformanceValue'] / twi_val)
-            np_pct_ce = 0 if twi_ce_val == 0 else float(v['totalNetPerformanceValueWithCurrencyEffect'] / twi_ce_val)
-
-            historical_data.append({
-                'date': d,
-                'investmentValueWithCurrencyEffect': float(v['investmentValueWithCurrencyEffect']),
-                'netPerformance': float(v['totalNetPerformanceValue']),
-                'netPerformanceWithCurrencyEffect': float(v['totalNetPerformanceValueWithCurrencyEffect']),
-                'netPerformanceInPercentage': np_pct,
-                'netPerformanceInPercentageWithCurrencyEffect': np_pct_ce,
-                'totalAccountBalance': 0,
-                'totalInvestment': float(v['totalInvestmentValue']),
-                'totalInvestmentValueWithCurrencyEffect': float(v['totalInvestmentValueWithCurrencyEffect']),
-                'value': float(v['totalCurrentValue']),
-                'valueWithCurrencyEffect': float(v['totalCurrentValueWithCurrencyEffect']),
-                'netWorth': float(v['totalCurrentValueWithCurrencyEffect']),
+        accumulatedValuesByDate = {}
+        valuesBySymbol = {}
+        for item in lastTransactionPoint.items:
+            marketPriceInBaseCurrency = ((marketSymbolMap[endDateString][item.symbol]  or  item.averagePrice) * (exchangeRatesByCurrency[f"{item.currency}{self.currency}"][endDateString]  or  1))
+            currentValues, currentValuesWithCurrencyEffect, grossPerformance, grossPerformancePercentage, grossPerformancePercentageWithCurrencyEffect, grossPerformanceWithCurrencyEffect, hasErrors, investmentValuesAccumulated, investmentValuesAccumulatedWithCurrencyEffect, investmentValuesWithCurrencyEffect, netPerformance, netPerformancePercentage, netPerformancePercentageWithCurrencyEffectMap, netPerformanceValues, netPerformanceValuesWithCurrencyEffect, netPerformanceWithCurrencyEffectMap, timeWeightedInvestment, timeWeightedInvestmentValues, timeWeightedInvestmentValuesWithCurrencyEffect, timeWeightedInvestmentWithCurrencyEffect, totalDividend, totalDividendInBaseCurrency, totalInterestInBaseCurrency, totalInvestment, totalInvestmentWithCurrencyEffect, totalLiabilitiesInBaseCurrency = self.get_symbol_metrics({
+                'chartDateMap': chartDateMap,
+                'marketSymbolMap': marketSymbolMap,
+                'dataSource': item.dataSource,
+                'end': self.end_date,
+                'exchangeRates': exchangeRatesByCurrency[f"{item.currency}{self.currency}"],
+                'start': self.start_date,
+                'symbol': item.symbol
             })
+            hasAnySymbolMetricsErrors = (hasAnySymbolMetricsErrors  or  hasErrors)
+            includeInTotalAssetValue = (item.assetSubClass != "CASH")
+            if includeInTotalAssetValue:
+                valuesBySymbol[item.symbol] = {
+                    'currentValues': currentValues,
+                    'currentValuesWithCurrencyEffect': currentValuesWithCurrencyEffect,
+                    'investmentValuesAccumulated': investmentValuesAccumulated,
+                    'investmentValuesAccumulatedWithCurrencyEffect': investmentValuesAccumulatedWithCurrencyEffect,
+                    'investmentValuesWithCurrencyEffect': investmentValuesWithCurrencyEffect,
+                    'netPerformanceValues': netPerformanceValues,
+                    'netPerformanceValuesWithCurrencyEffect': netPerformanceValuesWithCurrencyEffect,
+                    'timeWeightedInvestmentValues': timeWeightedInvestmentValues,
+                    'timeWeightedInvestmentValuesWithCurrencyEffect': timeWeightedInvestmentValuesWithCurrencyEffect
+                }
+            positions.append({
+                'includeInTotalAssetValue': includeInTotalAssetValue,
+                'timeWeightedInvestment': timeWeightedInvestment,
+                'timeWeightedInvestmentWithCurrencyEffect': timeWeightedInvestmentWithCurrencyEffect,
+                'activitiesCount': item.activitiesCount,
+                'averagePrice': item.averagePrice,
+                'currency': item.currency,
+                'dataSource': item.dataSource,
+                'dateOfFirstActivity': item.dateOfFirstActivity,
+                'dividend': totalDividend,
+                'dividendInBaseCurrency': totalDividendInBaseCurrency,
+                'fee': item.fee,
+                'feeInBaseCurrency': item.feeInBaseCurrency,
+                'grossPerformance': ((grossPerformance  or  None) if not hasErrors else None),
+                'grossPerformancePercentage': ((grossPerformancePercentage  or  None) if not hasErrors else None),
+                'grossPerformancePercentageWithCurrencyEffect': ((grossPerformancePercentageWithCurrencyEffect  or  None) if not hasErrors else None),
+                'grossPerformanceWithCurrencyEffect': ((grossPerformanceWithCurrencyEffect  or  None) if not hasErrors else None),
+                'includeInHoldings': item.includeInHoldings,
+                'investment': totalInvestment,
+                'investmentWithCurrencyEffect': totalInvestmentWithCurrencyEffect,
+                'marketPrice': (float(marketSymbolMap[endDateString][item.symbol])  or  1),
+                'marketPriceInBaseCurrency': (float(marketPriceInBaseCurrency)  or  1),
+                'netPerformance': ((netPerformance  or  None) if not hasErrors else None),
+                'netPerformancePercentage': ((netPerformancePercentage  or  None) if not hasErrors else None),
+                'netPerformancePercentageWithCurrencyEffectMap': ((netPerformancePercentageWithCurrencyEffectMap  or  None) if not hasErrors else None),
+                'netPerformanceWithCurrencyEffectMap': ((netPerformanceWithCurrencyEffectMap  or  None) if not hasErrors else None),
+                'quantity': item.quantity,
+                'symbol': item.symbol,
+                'tags': item.tags,
+                'valueInBaseCurrency': (Decimal(str(marketPriceInBaseCurrency)) * item.quantity)
+            })
+            totalInterestWithCurrencyEffect = (totalInterestWithCurrencyEffect + totalInterestInBaseCurrency)
+            totalLiabilitiesWithCurrencyEffect = (totalLiabilitiesWithCurrencyEffect + totalLiabilitiesInBaseCurrency)
+            if (((hasErrors  or  next((x for x in currentRateErrors if ((x.get('dataSource') == item.dataSource)  and  (x.get('symbol') == item.symbol))), None))  and  (item.investment > 0))  and  (item.skipErrors == False)):
+                errors.append({'dataSource': item.dataSource, 'symbol': item.symbol})
 
-        # Calculate overall performance
+        accountBalanceMap = {}
+        lastKnownBalance = Decimal(str(0))
+        for dateString in chartDates:
+            if (accountBalanceItemsMap[dateString] != None):
+                lastKnownBalance = accountBalanceItemsMap[dateString]
+            accountBalanceMap[dateString] = lastKnownBalance
+            for symbol in list(valuesBySymbol.keys()):
+                symbolValues = valuesBySymbol[symbol]
+                currentValue = (symbolValues.currentValues[dateString]  or  Decimal(str(0)))
+                currentValueWithCurrencyEffect = (symbolValues.currentValuesWithCurrencyEffect[dateString]  or  Decimal(str(0)))
+                investmentValueAccumulated = (symbolValues.investmentValuesAccumulated[dateString]  or  Decimal(str(0)))
+                investmentValueAccumulatedWithCurrencyEffect = (symbolValues.investmentValuesAccumulatedWithCurrencyEffect[dateString]  or  Decimal(str(0)))
+                investmentValueWithCurrencyEffect = (symbolValues.investmentValuesWithCurrencyEffect[dateString]  or  Decimal(str(0)))
+                netPerformanceValue = (symbolValues.netPerformanceValues[dateString]  or  Decimal(str(0)))
+                netPerformanceValueWithCurrencyEffect = (symbolValues.netPerformanceValuesWithCurrencyEffect[dateString]  or  Decimal(str(0)))
+                timeWeightedInvestmentValue = (symbolValues.timeWeightedInvestmentValues[dateString]  or  Decimal(str(0)))
+                timeWeightedInvestmentValueWithCurrencyEffect = (symbolValues.timeWeightedInvestmentValuesWithCurrencyEffect[dateString]  or  Decimal(str(0)))
+                accumulatedValuesByDate[dateString] = {
+                    'investmentValueWithCurrencyEffect': ((accumulatedValuesByDate[dateString].investmentValueWithCurrencyEffect  or  Decimal(str(0))) + investmentValueWithCurrencyEffect),
+                    'totalAccountBalanceWithCurrencyEffect': accountBalanceMap[dateString],
+                    'totalCurrentValue': ((accumulatedValuesByDate[dateString].totalCurrentValue  or  Decimal(str(0))) + currentValue),
+                    'totalCurrentValueWithCurrencyEffect': ((accumulatedValuesByDate[dateString].totalCurrentValueWithCurrencyEffect  or  Decimal(str(0))) + currentValueWithCurrencyEffect),
+                    'totalInvestmentValue': ((accumulatedValuesByDate[dateString].totalInvestmentValue  or  Decimal(str(0))) + investmentValueAccumulated),
+                    'totalInvestmentValueWithCurrencyEffect': ((accumulatedValuesByDate[dateString].totalInvestmentValueWithCurrencyEffect  or  Decimal(str(0))) + investmentValueAccumulatedWithCurrencyEffect),
+                    'totalNetPerformanceValue': ((accumulatedValuesByDate[dateString].totalNetPerformanceValue  or  Decimal(str(0))) + netPerformanceValue),
+                    'totalNetPerformanceValueWithCurrencyEffect': ((accumulatedValuesByDate[dateString].totalNetPerformanceValueWithCurrencyEffect  or  Decimal(str(0))) + netPerformanceValueWithCurrencyEffect),
+                    'totalTimeWeightedInvestmentValue': ((accumulatedValuesByDate[dateString].totalTimeWeightedInvestmentValue  or  Decimal(str(0))) + timeWeightedInvestmentValue),
+                    'totalTimeWeightedInvestmentValueWithCurrencyEffect': ((accumulatedValuesByDate[dateString].totalTimeWeightedInvestmentValueWithCurrencyEffect  or  Decimal(str(0))) + timeWeightedInvestmentValueWithCurrencyEffect)
+                }
+
         overall = self.calculate_overall_performance(positions)
-
+        positionsIncludedInHoldings = [rest for x in [x for x in positions if x.get('includeInHoldings')]]
         return {
             **overall,
-            'errors': [],
-            'historicalData': historical_data,
-            'hasErrors': has_any_errors or overall.get('hasErrors', False),
-            'positions': positions,
+            'errors': errors,
+            'historicalData': historicalData,
+            'totalInterestWithCurrencyEffect': totalInterestWithCurrencyEffect,
+            'totalLiabilitiesWithCurrencyEffect': totalLiabilitiesWithCurrencyEffect,
+            'hasErrors': (hasAnySymbolMetricsErrors  or  overall.hasErrors),
+            'positions': positionsIncludedInHoldings
         }
+
+
+    def get_data_provider_infos(self):
+        return self.data_provider_infos
+
+
+    def get_dividend_in_base_currency(self):
+
+        return getSum([x.get('dividendInBaseCurrency') for x in self.snapshot.positions])
+
+
+    def get_fees_in_base_currency(self):
+
+        return self.snapshot.totalFeesWithCurrencyEffect
+
+
+    def get_interest_in_base_currency(self):
+
+        return self.snapshot.totalInterestWithCurrencyEffect
+
+
+    def get_investments(self):
+        if (len(self.transaction_points) == 0):
+            return []
+        return [{'date': x.date, 'investment': functools.reduce(lambda investment, transactionPointSymbol: (investment + transactionPointSymbol.investment), x.items, Decimal(str(0)))} for x in self.transaction_points]
+
+
+    def get_investments_by_group(self, data, groupBy):
+        groupedData = {}
+        for date, investmentValueWithCurrencyEffect in data:
+            dateGroup = (date[0:7] if (groupBy == 'month') else date[0:4])
+            groupedData[dateGroup] = ((groupedData[dateGroup]  or  Decimal(str(0))) + investmentValueWithCurrencyEffect)
+        return [{'date': (f"{x}-01" if (groupBy == 'month') else f"{x}-01-01"), 'investment': float(groupedData[x])} for x in list(groupedData.keys())]
+
+
+    def get_liabilities_in_base_currency(self):
+
+        return self.snapshot.totalLiabilitiesWithCurrencyEffect
+
+
+    def get_performance(self, end, start):
+
+        historicalData = self.snapshot
+        chart = []
+        netPerformanceAtStartDate = None
+        netPerformanceWithCurrencyEffectAtStartDate = None
+        totalInvestmentValuesWithCurrencyEffect = []
+        for historicalDataItem in historicalData:
+            date = resetHours(parseDate(historicalDataItem.date))
+            if (not _is_before(date, start)  and  not _is_after(date, end)):
+                if not _is_number(netPerformanceAtStartDate):
+                    netPerformanceAtStartDate = historicalDataItem.netPerformance
+                    netPerformanceWithCurrencyEffectAtStartDate = historicalDataItem.netPerformanceWithCurrencyEffect
+                netPerformanceSinceStartDate = (historicalDataItem.netPerformance - netPerformanceAtStartDate)
+                netPerformanceWithCurrencyEffectSinceStartDate = (historicalDataItem.netPerformanceWithCurrencyEffect - netPerformanceWithCurrencyEffectAtStartDate)
+                if (historicalDataItem.totalInvestmentValueWithCurrencyEffect > 0):
+                    totalInvestmentValuesWithCurrencyEffect.append(historicalDataItem.totalInvestmentValueWithCurrencyEffect)
+                timeWeightedInvestmentValue = ((sum(totalInvestmentValuesWithCurrencyEffect) / len(totalInvestmentValuesWithCurrencyEffect)) if (len(totalInvestmentValuesWithCurrencyEffect) > 0) else 0)
+                chart.append({
+                    **historicalDataItem,
+                    'netPerformance': (historicalDataItem.netPerformance - netPerformanceAtStartDate),
+                    'netPerformanceWithCurrencyEffect': netPerformanceWithCurrencyEffectSinceStartDate,
+                    'netPerformanceInPercentage': (0 if (timeWeightedInvestmentValue == 0) else (netPerformanceSinceStartDate / timeWeightedInvestmentValue)),
+                    'netPerformanceInPercentageWithCurrencyEffect': (0 if (timeWeightedInvestmentValue == 0) else (netPerformanceWithCurrencyEffectSinceStartDate / timeWeightedInvestmentValue))
+                })
+        return {'chart': chart}
+
+
+    def get_start_date(self):
+        firstAccountBalanceDate = None
+        firstActivityDate = None
+        try:
+            firstAccountBalanceDateString = self.account_balance_items[0].date
+            firstAccountBalanceDate = (parseDate(firstAccountBalanceDateString) if firstAccountBalanceDateString else datetime.now())
+        except Exception as error:
+            firstAccountBalanceDate = datetime.now()
+        try:
+            firstActivityDateString = self.transaction_points[0].date
+            firstActivityDate = (parseDate(firstActivityDateString) if firstActivityDateString else datetime.now())
+        except Exception as error:
+            firstActivityDate = datetime.now()
+        return _date_min([firstAccountBalanceDate, firstActivityDate])
+
+
+    def get_transaction_points(self):
+        return self.transaction_points
+
+
+    def get_chart_date_map(self, endDate, startDate, step):
+
+        for date in _each_day_of_interval({'end': endDate, 'start': startDate}, {'step': step}):
+            chartDateMap[_date_format(date, DATE_FORMAT)] = True
+        if (step > 1):
+            for date in _each_day_of_interval({'end': endDate, 'start': _sub_days(endDate, 90)}, {'step': 3}):
+                chartDateMap[_date_format(date, DATE_FORMAT)] = True
+            for date in _each_day_of_interval({'end': endDate, 'start': _sub_days(endDate, 30)}, {'step': 1}):
+                chartDateMap[_date_format(date, DATE_FORMAT)] = True
+        chartDateMap[_date_format(endDate, DATE_FORMAT)] = True
+        for dateRange in ['1d', '1y', '5y', 'max', 'mtd', 'wtd', 'ytd']:
+            dateRangeEnd, dateRangeStart = getIntervalFromDateRange(dateRange)
+            if (not _is_before(dateRangeStart, startDate)  and  not _is_after(dateRangeStart, endDate)):
+                chartDateMap[_date_format(dateRangeStart, DATE_FORMAT)] = True
+            if (not _is_before(dateRangeEnd, startDate)  and  not _is_after(dateRangeEnd, endDate)):
+                chartDateMap[_date_format(dateRangeEnd, DATE_FORMAT)] = True
+        interval = {'start': startDate, 'end': endDate}
+        for date in _each_year_of_interval(interval):
+            yearStart = _start_of_year(date)
+            yearEnd = _end_of_year(date)
+            if _is_within_interval(yearStart, interval):
+                chartDateMap[_date_format(yearStart, DATE_FORMAT)] = True
+            if _is_within_interval(yearEnd, interval):
+                chartDateMap[_date_format(yearEnd, DATE_FORMAT)] = True
+        return chartDateMap
+
+
+    def compute_transaction_points(self):
+        self.transaction_points = []
+        symbols = {}
+        lastDate = None
+        lastTransactionPoint = None
+        for date, fee, feeInBaseCurrency, quantity, SymbolProfile, tags, type, unitPrice in self.activities:
+            currentTransactionPointItem = None
+            assetSubClass = SymbolProfile.assetSubClass
+            currency = SymbolProfile.currency
+            dataSource = SymbolProfile.dataSource
+            factor = getFactor(type)
+            skipErrors = not not SymbolProfile.userId
+            symbol = SymbolProfile.symbol
+            oldAccumulatedSymbol = symbols[symbol]
+            if oldAccumulatedSymbol:
+                investment = oldAccumulatedSymbol.investment
+                newQuantity = ((quantity * factor) + oldAccumulatedSymbol.quantity)
+                if (type == 'BUY'):
+                    if (oldAccumulatedSymbol.investment >= 0):
+                        investment = (oldAccumulatedSymbol.investment + (quantity * unitPrice))
+                    else:
+                        investment = (oldAccumulatedSymbol.investment + (quantity * oldAccumulatedSymbol.averagePrice))
+                elif (type == 'SELL'):
+                    if (oldAccumulatedSymbol.investment > 0):
+                        investment = (oldAccumulatedSymbol.investment - (quantity * oldAccumulatedSymbol.averagePrice))
+                    else:
+                        investment = (oldAccumulatedSymbol.investment - (quantity * unitPrice))
+                if (abs(newQuantity) < float_info.epsilon):
+                    investment = Decimal(str(0))
+                    newQuantity = Decimal(str(0))
+                currentTransactionPointItem = {
+                    'assetSubClass': assetSubClass,
+                    'currency': currency,
+                    'dataSource': dataSource,
+                    'investment': investment,
+                    'skipErrors': skipErrors,
+                    'symbol': symbol,
+                    'activitiesCount': (oldAccumulatedSymbol.activitiesCount + 1),
+                    'averagePrice': (Decimal(str(0)) if (newQuantity == 0) else abs((investment / newQuantity))),
+                    'dateOfFirstActivity': oldAccumulatedSymbol.dateOfFirstActivity,
+                    'dividend': Decimal(str(0)),
+                    'fee': (oldAccumulatedSymbol.fee + fee),
+                    'feeInBaseCurrency': (oldAccumulatedSymbol.feeInBaseCurrency + feeInBaseCurrency),
+                    'includeInHoldings': oldAccumulatedSymbol.includeInHoldings,
+                    'quantity': newQuantity,
+                    'tags': [*oldAccumulatedSymbol.tags, *tags]
+                }
+            else:
+                currentTransactionPointItem = {
+                    'assetSubClass': assetSubClass,
+                    'currency': currency,
+                    'dataSource': dataSource,
+                    'fee': fee,
+                    'feeInBaseCurrency': feeInBaseCurrency,
+                    'skipErrors': skipErrors,
+                    'symbol': symbol,
+                    'tags': tags,
+                    'activitiesCount': 1,
+                    'averagePrice': unitPrice,
+                    'dateOfFirstActivity': date,
+                    'dividend': Decimal(str(0)),
+                    'includeInHoldings': (type in ['BUY', 'DIVIDEND', 'SELL']),
+                    'investment': ((unitPrice * quantity) * factor),
+                    'quantity': (quantity * factor)
+                }
+            currentTransactionPointItem.tags = _uniq_by(currentTransactionPointItem.tags, 'id')
+            symbols[SymbolProfile.symbol] = currentTransactionPointItem
+            items = (lastTransactionPoint.items  or  [])
+            newItems = [x for x in items if (x.get('symbol') != SymbolProfile.symbol)]
+            newItems.append(currentTransactionPointItem)
+            sorted(newItems, key=functools.cmp_to_key(lambda a, b: ((a.symbol > b.symbol) - (a.symbol < b.symbol))))
+            fees = Decimal(str(0))
+            if (type == 'FEE'):
+                fees = fee
+            interest = Decimal(str(0))
+            if (type == 'INTEREST'):
+                interest = (quantity * unitPrice)
+            liabilities = Decimal(str(0))
+            if (type == 'LIABILITY'):
+                liabilities = (quantity * unitPrice)
+            if ((lastDate != date)  or  (lastTransactionPoint == None)):
+                lastTransactionPoint = {
+                    'date': date,
+                    'fees': fees,
+                    'interest': interest,
+                    'liabilities': liabilities,
+                    'items': newItems
+                }
+                self.transaction_points.append(lastTransactionPoint)
+            else:
+                lastTransactionPoint.fees = (lastTransactionPoint.fees + fees)
+                lastTransactionPoint.interest = (lastTransactionPoint.interest + interest)
+                lastTransactionPoint.items = newItems
+                lastTransactionPoint.liabilities = (lastTransactionPoint.liabilities + liabilities)
+            lastDate = date
+
+
+    def _get_snapshot_cached(self):
+        if not hasattr(self, '_snapshot'):
+            try:
+                self._snapshot = self.compute_snapshot()
+            except Exception:
+                self._snapshot = None
+        return self._snapshot
 
     def get_performance(self):
-        """Return full performance response."""
-        snapshot = self._compute_snapshot()
         activities = self.sorted_activities()
-        first_date = min((a['date'] for a in activities), default=None)
-
-        # Filter chart data
-        chart = snapshot.get('historicalData', [])
-
-        # Calculate net performance from chart
-        net_perf_start = None
-        net_perf_ce_start = None
-        result_chart = []
-        twi_values = []
-
-        for item in chart:
-            if net_perf_start is None:
-                net_perf_start = item.get('netPerformance', 0)
-                net_perf_ce_start = item.get('netPerformanceWithCurrencyEffect', 0)
-
-            np_since_start = item.get('netPerformance', 0) - net_perf_start
-            np_ce_since_start = item.get('netPerformanceWithCurrencyEffect', 0) - net_perf_ce_start
-
-            if item.get('totalInvestmentValueWithCurrencyEffect', 0) > 0:
-                twi_values.append(item['totalInvestmentValueWithCurrencyEffect'])
-
-            twi_avg = sum(twi_values) / len(twi_values) if twi_values else 0
-
-            result_chart.append({
-                **item,
-                'netPerformance': np_since_start,
-                'netPerformanceWithCurrencyEffect': np_ce_since_start,
-                'netPerformanceInPercentage': np_since_start / twi_avg if twi_avg else 0,
-                'netPerformanceInPercentageWithCurrencyEffect': np_ce_since_start / twi_avg if twi_avg else 0,
+        first_date = min((a["date"] for a in activities), default=None)
+        snapshot = self._get_snapshot_cached()
+        if not snapshot:
+            return {"chart": [], "firstOrderDate": first_date, "performance": {
+                "currentNetWorth": 0, "currentValue": 0,
+                "currentValueInBaseCurrency": 0, "netPerformance": 0,
+                "netPerformancePercentage": 0,
+                "netPerformancePercentageWithCurrencyEffect": 0,
+                "netPerformanceWithCurrencyEffect": 0,
+                "totalFees": 0, "totalInvestment": 0,
+                "totalLiabilities": 0.0, "totalValueables": 0.0,
+            }}
+        hist = snapshot.get("historicalData", [])
+        positions = snapshot.get("positions", [])
+        chart = []
+        np_start = None
+        np_ce_start = None
+        twi_vals = []
+        for item in hist:
+            if np_start is None:
+                np_start = item.get("netPerformance", 0)
+                np_ce_start = item.get("netPerformanceWithCurrencyEffect", 0)
+            np_since = item.get("netPerformance", 0) - np_start
+            np_ce_since = item.get("netPerformanceWithCurrencyEffect", 0) - np_ce_start
+            if item.get("totalInvestmentValueWithCurrencyEffect", 0) > 0:
+                twi_vals.append(item["totalInvestmentValueWithCurrencyEffect"])
+            twi_avg = sum(twi_vals) / len(twi_vals) if twi_vals else 0
+            chart.append({**item,
+                "netPerformance": np_since,
+                "netPerformanceWithCurrencyEffect": np_ce_since,
+                "netPerformanceInPercentage": np_since / twi_avg if twi_avg else 0,
+                "netPerformanceInPercentageWithCurrencyEffect": np_ce_since / twi_avg if twi_avg else 0,
             })
-
-        # Compute summary from positions
-        total_investment = Decimal('0')
-        current_value = Decimal('0')
-        total_fees = Decimal('0')
-        net_performance = Decimal('0')
-        net_perf_pct = Decimal('0')
-        net_perf_pct_ce = Decimal('0')
-        total_liabilities = Decimal('0')
-
-        for pos in snapshot.get('positions', []):
-            if pos.get('includeInTotalAssetValue', True):
-                inv = pos.get('investment', Decimal('0'))
-                if isinstance(inv, (int, float)):
-                    inv = Decimal(str(inv))
-                total_investment += inv
-                vib = pos.get('valueInBaseCurrency', Decimal('0'))
-                if isinstance(vib, (int, float)):
-                    vib = Decimal(str(vib))
-                current_value += vib
-                fee = pos.get('feeInBaseCurrency', Decimal('0'))
-                if isinstance(fee, (int, float)):
-                    fee = Decimal(str(fee))
-                total_fees += fee
-                np_val = pos.get('netPerformance')
-                if np_val is not None:
-                    if isinstance(np_val, (int, float)):
-                        np_val = Decimal(str(np_val))
-                    net_performance += np_val
-
-        net_worth = float(current_value)
-
-        # Get net performance percentage from positions
-        for pos in snapshot.get('positions', []):
-            np_pct_map = pos.get('netPerformancePercentageWithCurrencyEffectMap')
-            if np_pct_map and isinstance(np_pct_map, dict):
-                max_val = np_pct_map.get('max', Decimal('0'))
-                if isinstance(max_val, (int, float)):
-                    max_val = Decimal(str(max_val))
-                net_perf_pct_ce += max_val
-
-        return {
-            'chart': result_chart,
-            'firstOrderDate': first_date,
-            'performance': {
-                'currentNetWorth': net_worth,
-                'currentValue': float(current_value),
-                'currentValueInBaseCurrency': float(current_value),
-                'netPerformance': float(net_performance),
-                'netPerformancePercentage': float(net_perf_pct),
-                'netPerformancePercentageWithCurrencyEffect': float(net_perf_pct_ce),
-                'netPerformanceWithCurrencyEffect': float(net_performance),
-                'totalFees': float(total_fees),
-                'totalInvestment': float(total_investment),
-                'totalLiabilities': float(total_liabilities),
-                'totalValueables': 0.0,
-            },
-        }
+        total_inv = sum(float(p.get("investment", 0)) for p in positions if p.get("includeInTotalAssetValue", True))
+        current_val = sum(float(p.get("valueInBaseCurrency", 0)) for p in positions if p.get("includeInTotalAssetValue", True))
+        total_fees = float(snapshot.get("totalFeesWithCurrencyEffect", 0))
+        net_perf = sum(float(p.get("netPerformance", 0) or 0) for p in positions if p.get("includeInTotalAssetValue", True))
+        return {"chart": chart, "firstOrderDate": first_date, "performance": {
+            "currentNetWorth": current_val,
+            "currentValue": current_val,
+            "currentValueInBaseCurrency": current_val,
+            "netPerformance": net_perf,
+            "netPerformancePercentage": 0,
+            "netPerformancePercentageWithCurrencyEffect": 0,
+            "netPerformanceWithCurrencyEffect": net_perf,
+            "totalFees": total_fees,
+            "totalInvestment": total_inv,
+            "totalLiabilities": 0.0,
+            "totalValueables": 0.0,
+        }}
 
     def get_investments(self, group_by=None):
-        """Return investments timeline."""
-        transaction_points = self._compute_transaction_points()
-        if not transaction_points:
-            return {'investments': []}
-
+        snapshot = self._get_snapshot_cached()
+        if not snapshot:
+            return {"investments": []}
+        hist = snapshot.get("historicalData", [])
         if group_by:
-            # Group by month or year
-            snapshot = self._compute_snapshot()
-            hist_data = snapshot.get('historicalData', [])
             grouped = {}
-            for item in hist_data:
-                d = item['date']
-                inv = item.get('investmentValueWithCurrencyEffect', 0)
-                if group_by == 'month':
-                    key = d[:7]
-                else:
-                    key = d[:4]
+            for item in hist:
+                d = item["date"]
+                inv = item.get("investmentValueWithCurrencyEffect", 0)
+                key = d[:7] if group_by == "month" else d[:4]
                 grouped[key] = grouped.get(key, 0) + inv
-
             investments = []
             for key in sorted(grouped.keys()):
-                if group_by == 'month':
-                    investments.append({'date': f'{key}-01', 'investment': grouped[key]})
-                else:
-                    investments.append({'date': f'{key}-01-01', 'investment': grouped[key]})
-            return {'investments': investments}
-
+                dt = f"{key}-01" if group_by == "month" else f"{key}-01-01"
+                investments.append({"date": dt, "investment": grouped[key]})
+            return {"investments": investments}
+        tp = self._compute_tp()
         investments = []
-        for tp in transaction_points:
-            total_inv = Decimal('0')
-            for item in tp['items']:
-                total_inv += item.get('investment', Decimal('0'))
-            investments.append({
-                'date': tp['date'],
-                'investment': float(total_inv),
-            })
-        return {'investments': investments}
+        for t in tp:
+            total_inv = sum(float(it.get("investment", 0)) for it in t["items"])
+            investments.append({"date": t["date"], "investment": total_inv})
+        return {"investments": investments}
 
     def get_holdings(self):
-        """Return holdings per symbol."""
-        snapshot = self._compute_snapshot()
+        snapshot = self._get_snapshot_cached()
+        if not snapshot:
+            return {"holdings": {}}
         holdings = {}
-
-        for pos in snapshot.get('positions', []):
-            sym = pos['symbol']
-            qty = pos.get('quantity', Decimal('0'))
-            if isinstance(qty, Decimal) and qty == 0:
+        for pos in snapshot.get("positions", []):
+            sym = pos.get("symbol", "")
+            qty = pos.get("quantity", 0)
+            if isinstance(qty, Decimal):
+                qty = float(qty)
+            if qty == 0:
                 continue
+            h = {}
+            for k, v in pos.items():
+                if isinstance(v, Decimal):
+                    h[k] = float(v)
+                elif isinstance(v, dict):
+                    h[k] = {dk: float(dv) if isinstance(dv, Decimal) else dv for dk, dv in v.items()}
+                else:
+                    h[k] = v
+            holdings[sym] = h
+        return {"holdings": holdings}
 
-            holdings[sym] = {
-                'symbol': sym,
-                'currency': pos.get('currency', 'USD'),
-                'dataSource': pos.get('dataSource', 'YAHOO'),
-                'quantity': float(qty),
-                'investment': float(pos.get('investment', 0)),
-                'marketPrice': pos.get('marketPrice', 0),
-                'marketPriceInBaseCurrency': pos.get('marketPriceInBaseCurrency', 0),
-                'valueInBaseCurrency': float(pos.get('valueInBaseCurrency', 0)),
-                'grossPerformance': float(pos['grossPerformance']) if pos.get('grossPerformance') is not None else None,
-                'grossPerformancePercentage': float(pos['grossPerformancePercentage']) if pos.get('grossPerformancePercentage') is not None else None,
-                'grossPerformancePercentageWithCurrencyEffect': float(pos['grossPerformancePercentageWithCurrencyEffect']) if pos.get('grossPerformancePercentageWithCurrencyEffect') is not None else None,
-                'grossPerformanceWithCurrencyEffect': float(pos['grossPerformanceWithCurrencyEffect']) if pos.get('grossPerformanceWithCurrencyEffect') is not None else None,
-                'netPerformance': float(pos['netPerformance']) if pos.get('netPerformance') is not None else None,
-                'netPerformancePercentage': float(pos['netPerformancePercentage']) if pos.get('netPerformancePercentage') is not None else None,
-                'netPerformancePercentageWithCurrencyEffectMap': {k: float(v) for k, v in pos.get('netPerformancePercentageWithCurrencyEffectMap', {}).items()} if pos.get('netPerformancePercentageWithCurrencyEffectMap') else {},
-                'netPerformanceWithCurrencyEffectMap': {k: float(v) for k, v in pos.get('netPerformanceWithCurrencyEffectMap', {}).items()} if pos.get('netPerformanceWithCurrencyEffectMap') else {},
-                'averagePrice': float(pos.get('averagePrice', 0)),
-                'fee': float(pos.get('fee', 0)),
-                'feeInBaseCurrency': float(pos.get('feeInBaseCurrency', 0)),
-                'dividend': float(pos.get('dividend', 0)),
-                'dividendInBaseCurrency': float(pos.get('dividendInBaseCurrency', 0)),
-                'dateOfFirstActivity': pos.get('dateOfFirstActivity'),
-                'activitiesCount': pos.get('activitiesCount', 0),
-                'tags': pos.get('tags', []),
-            }
-
-        return {'holdings': holdings}
-
-    def get_details(self, base_currency='USD'):
-        """Return full portfolio details."""
-        snapshot = self._compute_snapshot()
+    def get_details(self, base_currency="USD"):
+        snapshot = self._get_snapshot_cached()
+        if not snapshot:
+            return {"accounts": {}, "createdAt": None, "holdings": {},
+                    "platforms": {}, "summary": {"totalInvestment": 0,
+                    "netPerformance": 0, "currentValueInBaseCurrency": 0},
+                    "hasError": False}
         holdings_data = self.get_holdings()
-
-        total_investment = Decimal('0')
-        net_performance = Decimal('0')
-        current_value = Decimal('0')
-        total_fees = Decimal('0')
-
-        for pos in snapshot.get('positions', []):
-            inv = pos.get('investment', Decimal('0'))
-            if isinstance(inv, (int, float)):
-                inv = Decimal(str(inv))
-            total_investment += inv
-            vib = pos.get('valueInBaseCurrency', Decimal('0'))
-            if isinstance(vib, (int, float)):
-                vib = Decimal(str(vib))
-            current_value += vib
-            np_val = pos.get('netPerformance')
-            if np_val is not None:
-                if isinstance(np_val, (int, float)):
-                    np_val = Decimal(str(np_val))
-                net_performance += np_val
-            fee = pos.get('feeInBaseCurrency', Decimal('0'))
-            if isinstance(fee, (int, float)):
-                fee = Decimal(str(fee))
-            total_fees += fee
-
+        positions = snapshot.get("positions", [])
+        total_inv = sum(float(p.get("investment", 0)) for p in positions)
+        current_val = sum(float(p.get("valueInBaseCurrency", 0)) for p in positions)
+        net_perf = sum(float(p.get("netPerformance", 0) or 0) for p in positions)
+        total_fees = float(snapshot.get("totalFeesWithCurrencyEffect", 0))
         activities = self.sorted_activities()
-        created_at = min((a['date'] for a in activities), default=None)
-
-        return {
-            'accounts': {
-                'default': {
-                    'balance': 0.0,
-                    'currency': base_currency,
-                    'name': 'Default Account',
-                    'valueInBaseCurrency': float(current_value),
-                }
-            },
-            'createdAt': created_at,
-            'holdings': holdings_data.get('holdings', {}),
-            'platforms': {
-                'default': {
-                    'balance': 0.0,
-                    'currency': base_currency,
-                    'name': 'Default Platform',
-                    'valueInBaseCurrency': float(current_value),
-                }
-            },
-            'summary': {
-                'totalInvestment': float(total_investment),
-                'netPerformance': float(net_performance),
-                'currentValueInBaseCurrency': float(current_value),
-                'totalFees': float(total_fees),
-            },
-            'hasError': snapshot.get('hasErrors', False),
-        }
+        created_at = min((a["date"] for a in activities), default=None)
+        return {"accounts": {"default": {"balance": 0.0, "currency": base_currency,
+            "name": "Default Account", "valueInBaseCurrency": current_val}},
+            "createdAt": created_at, "holdings": holdings_data.get("holdings", {}),
+            "platforms": {"default": {"balance": 0.0, "currency": base_currency,
+            "name": "Default Platform", "valueInBaseCurrency": current_val}},
+            "summary": {"totalInvestment": total_inv, "netPerformance": net_perf,
+            "currentValueInBaseCurrency": current_val, "totalFees": total_fees},
+            "hasError": snapshot.get("hasErrors", False)}
 
     def get_dividends(self, group_by=None):
-        """Return dividend timeline."""
         activities = self.sorted_activities()
-        dividends = [a for a in activities if a.get('type') == 'DIVIDEND']
-
+        dividends = [a for a in activities if a.get("type") == "DIVIDEND"]
         if group_by:
             grouped = {}
             for div in dividends:
-                d = div['date']
-                amount = float(div.get('quantity', 0)) * float(div.get('unitPrice', 0))
-                if group_by == 'month':
-                    key = d[:7]
-                else:
-                    key = d[:4]
+                d = div["date"]
+                amount = float(div.get("quantity", 0)) * float(div.get("unitPrice", 0))
+                key = d[:7] if group_by == "month" else d[:4]
                 grouped[key] = grouped.get(key, 0) + amount
-
             result = []
             for key in sorted(grouped.keys()):
-                if group_by == 'month':
-                    result.append({'date': f'{key}-01', 'investment': grouped[key]})
-                else:
-                    result.append({'date': f'{key}-01-01', 'investment': grouped[key]})
-            return {'dividends': result}
-
+                dt = f"{key}-01" if group_by == "month" else f"{key}-01-01"
+                result.append({"date": dt, "investment": grouped[key]})
+            return {"dividends": result}
         result = []
         for div in dividends:
-            amount = float(div.get('quantity', 0)) * float(div.get('unitPrice', 0))
-            result.append({
-                'date': div['date'],
-                'investment': amount,
-            })
-        return {'dividends': result}
+            amount = float(div.get("quantity", 0)) * float(div.get("unitPrice", 0))
+            result.append({"date": div["date"], "investment": amount})
+        return {"dividends": result}
 
     def evaluate_report(self):
-        """Return portfolio report with xRay."""
-        return {
-            'xRay': {
-                'categories': [
-                    {'key': 'accounts', 'name': 'Accounts', 'rules': []},
-                    {'key': 'currencies', 'name': 'Currencies', 'rules': []},
-                    {'key': 'fees', 'name': 'Fees', 'rules': []},
-                ],
-                'statistics': {'rulesActiveCount': 0, 'rulesFulfilledCount': 0},
-            }
-        }
+        return {"xRay": {"categories": [
+            {"key": "accounts", "name": "Accounts", "rules": []},
+            {"key": "currencies", "name": "Currencies", "rules": []},
+            {"key": "fees", "name": "Fees", "rules": []},
+        ], "statistics": {"rulesActiveCount": 0, "rulesFulfilledCount": 0}}}
+
+    def _compute_tp(self):
+        if not hasattr(self, "_tp_cache"):
+            self._tp_cache = self.compute_transaction_points() if hasattr(self, "compute_transaction_points") else []
+        return self._tp_cache
