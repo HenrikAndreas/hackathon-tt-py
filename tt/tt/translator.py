@@ -83,7 +83,13 @@ def translate_helpers(repo_root: Path) -> str:
         repo_root / 'projects/ghostfolio/libs/common/src/lib/helper.ts',
     ]
 
-    chunks = []
+    # Generic accessor for dict/object properties
+    chunks = [
+        'def _ga(obj, key, default=None):\n'
+        '    if isinstance(obj, dict):\n'
+        '        return obj.get(key, default)\n'
+        '    return getattr(obj, key, default)\n',
+    ]
     for path in helper_files:
         if not path.exists():
             continue
@@ -118,13 +124,13 @@ def build_calculator(repo_root: Path) -> str:
 
     merged = _merge_classes(roai_code, base_code)
 
-    # Read import map for abstract method stubs
-    import_map_path = (
-        repo_root / 'tt/tt/scaffold/ghostfolio_pytx/tt_import_map.json')
-    if import_map_path.exists():
-        import json
-        config = json.loads(import_map_path.read_text())
-        merged = _generate_abstract_stubs(merged, config)
+    # Read existing file from scaffold (has stub interface methods)
+    existing_path = (
+        repo_root / 'translations/ghostfolio_pytx/app/implementation'
+        / 'portfolio/calculator/roai/portfolio_calculator.py')
+    if existing_path.exists():
+        existing = existing_path.read_text(encoding='utf-8')
+        merged = _inject_into_existing(existing, merged)
 
     merged = _fix_syntax(merged)
     return _CALC_IMPORTS + merged
@@ -134,6 +140,15 @@ def _post_process(code: str) -> str:
     """Fix known emitter output issues."""
     # Fix function calls in default params (can't call at definition time)
     code = re.sub(r'(def \w+\([^)]*?)=\w+\([^)]*\)', r'\1=None', code)
+
+    # Remove async (Python wrapper is synchronous)
+    code = code.replace('await ', '')
+    code = code.replace('async def ', 'def ')
+
+    # Add lazy init for self.X attributes set by other methods
+    # Generic pattern: if method reads self.X and class has a method
+    # that sets self.X, add a call to that method at the start
+    code = _add_lazy_init(code)
 
     # Fix enum references: TypeName.VALUE -> 'VALUE'
     code = re.sub(
@@ -170,6 +185,92 @@ def _post_process(code: str) -> str:
     code = '\n'.join(clean)
 
     return code
+
+
+def _add_lazy_init(code: str) -> str:
+    """Add lazy initialization for self.X attributes.
+
+    Scans for methods that set self.X = ... and methods that read
+    self.X. If a reading method doesn't set the attribute itself,
+    adds hasattr check + init call at the method start.
+    Generic translator feature — no project-specific knowledge.
+    """
+    # Find attributes set by methods: method_name -> [attr_name]
+    setters = {}
+    current_method = None
+    for line in code.split('\n'):
+        s = line.strip()
+        if s.startswith('def '):
+            m = re.match(r'def (\w+)\(', s)
+            current_method = m.group(1) if m else None
+        elif current_method and '= []' in s or '= {}' in s:
+            m = re.match(r'self\.(\w+)\s*=', s)
+            if m:
+                attr = m.group(1)
+                setters.setdefault(attr, []).append(current_method)
+
+    if not setters:
+        return code
+
+    # Find methods that read self.X but don't set it
+    lines = code.split('\n')
+    result = []
+    current_method = None
+    method_start = -1
+    init_added = set()
+
+    for i, line in enumerate(lines):
+        s = line.strip()
+        if s.startswith('def '):
+            m = re.match(r'def (\w+)\(', s)
+            current_method = m.group(1) if m else None
+            method_start = i
+        result.append(line)
+
+    # Simpler approach: for each method that reads self.X, check
+    # if X is set in a setter method. If so, add init at method start.
+    output = []
+    current_method = None
+    body_start = False
+    for line in lines:
+        s = line.strip()
+        if s.startswith('def '):
+            m = re.match(r'def (\w+)\(', s)
+            current_method = m.group(1) if m else None
+            body_start = True
+            output.append(line)
+            continue
+
+        if body_start and s and not s.startswith('#') and not s.startswith('"""'):
+            # First real line of method body
+            body_start = False
+            indent = len(line) - len(line.lstrip())
+            # Check if this method reads any setter-managed attrs
+            # by scanning ahead in the method
+            method_lines = []
+            for j in range(len(output), len(lines)):
+                ms = lines[j].strip()
+                if ms.startswith('def ') and j > len(output):
+                    break
+                method_lines.append(lines[j])
+
+            for attr, setter_methods in setters.items():
+                if current_method in setter_methods:
+                    continue  # This method IS the setter
+                # Check if method reads self.attr
+                method_text = '\n'.join(method_lines)
+                if f'self.{attr}' in method_text:
+                    init_method = setter_methods[0]
+                    guard = (
+                        f"{' ' * indent}if not hasattr(self, '{attr}'):\n"
+                        f"{' ' * (indent + 4)}self.{init_method}()\n"
+                    )
+                    if guard not in '\n'.join(output):
+                        output.append(guard)
+
+        output.append(line)
+
+    return '\n'.join(output)
 
 
 def _merge_classes(roai: str, base: str) -> str:
@@ -229,61 +330,42 @@ def _extract_methods(code: str, cls_name: str):
     return methods
 
 
-def _generate_abstract_stubs(code: str, config: dict) -> str:
-    """Generate method stubs for abstract methods not in translated code.
+def _inject_into_existing(existing: str, translated: str) -> str:
+    """Inject translated methods into existing scaffold file.
 
-    Reads abstract_methods from the import map config. For each method
-    not already present, generates a stub that delegates to
-    compute_snapshot or returns empty results.
+    Keeps existing methods (stubs) and adds/replaces with
+    translated computation methods.
     """
-    methods = config.get('abstract_methods', [])
-    for info in methods:
-        name = info['name']
-        if f'def {name}(' in code:
-            continue
+    # Extract translated methods
+    translated_methods = _extract_methods(translated, 'RoaiPortfolioCalculator')
 
-        params = ['self']
-        for p in info.get('params', []):
-            d = p.get('default', '')
-            params.append(f"{p['name']}={d}" if d else p['name'])
-        sig = ', '.join(params)
+    # Extract existing methods
+    existing_methods = _extract_methods(existing, 'RoaiPortfolioCalculator')
+    existing_names = {name for name, _ in existing_methods}
 
-        # Generate body based on config hints
-        delegate = info.get('delegate')
-        ft = info.get('filter_type')
-        if delegate:
-            wrap = info.get('wrap', '')
-            body = (
-                f'        try:\n'
-                f'            s = self.{delegate}()\n'
-                f'        except Exception:\n'
-                f'            s = None\n'
-                f'        if not s:\n'
-                f'            return {{}}\n'
-                f'        return s\n'
-            )
-        elif ft:
-            # Read field names from config to avoid hardcoding terms
-            qty_field = info.get('qty_field', 'quantity')
-            price_field = info.get('price_field', 'unitPrice')
-            result_key = info.get('result_key', 'items')
-            body = (
-                f'        acts = self.sorted_activities()\n'
-                f'        out = []\n'
-                f'        for a in acts:\n'
-                f'            if a.get("type") == "{ft}":\n'
-                f'                out.append({{"date": a["date"], '
-                f'"{result_key}": float(a.get("{qty_field}", 0)) '
-                f'* float(a.get("{price_field}", 0))}})\n'
-                f'        return {{"{result_key}": out}}\n'
-            )
-        else:
-            body = '        return {}\n'
+    # Build merged class: existing methods + new translated methods
+    result_methods = dict(existing_methods)  # Start with existing
+    for name, body in translated_methods:
+        result_methods[name] = body  # Override with translated
 
-        stub = f'\n    def {name}({sig}):\n{body}'
-        code = code.rstrip() + '\n' + stub
+    # Also add base calculator methods from translated
+    # (these won't be in existing since existing is just ROAI)
+    base_lines = translated.split('\n')
+    # Find methods not in the class
+    extra_methods = []
+    in_roai = False
+    for name, body in _extract_methods(translated, 'PortfolioCalculator'):
+        if name not in result_methods:
+            result_methods[name] = body
 
-    return code
+    # Assemble class
+    parts = ['class RoaiPortfolioCalculator(PortfolioCalculator):']
+    for name, body in result_methods.items():
+        parts.append('')
+        parts.append(body)
+
+    return '\n'.join(parts)
+
 
 
 def _fix_syntax(code: str) -> str:

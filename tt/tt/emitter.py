@@ -313,11 +313,42 @@ class PythonEmitter:
 
     def _emit_ForOfStatement(self, node):
         left = node.left
+        right = self._expr(node.right)
+
         if _type(left) == 'VariableDeclaration':
-            var = self._emit_pattern(left.declarations[0].id)
+            decl_id = left.declarations[0].id
+            if _type(decl_id) == 'ObjectPattern':
+                # Destructured for-of: for (const {a, b} of items)
+                # Emit: for _item in items: \n a = _item.get('a') ...
+                props = []
+                for prop in decl_id.properties:
+                    if _type(prop) == 'RestElement':
+                        props.append(('rest', self._emit_pattern(prop.argument)))
+                    else:
+                        key = _name(prop.key)
+                        val = _name(prop.value) if prop.value else key
+                        props.append(('prop', key, val))
+
+                self._write(f'for _item in {right}:')
+                self._indent += 1
+                for p in props:
+                    if p[0] == 'rest':
+                        continue
+                    key, val = p[1], p[2]
+                    self._write(
+                        f"{val} = _item.get('{key}') "
+                        f"if isinstance(_item, dict) else "
+                        f"getattr(_item, '{key}', None)")
+                self._emit_block(node.body)
+                self._indent -= 1
+                return
+            elif _type(decl_id) == 'ArrayPattern':
+                var = self._emit_pattern(decl_id)
+            else:
+                var = self._emit_pattern(decl_id)
         else:
             var = self._expr(left)
-        right = self._expr(node.right)
+
         self._write(f'for {var} in {right}:')
         self._indent += 1
         self._emit_block(node.body)
@@ -483,6 +514,16 @@ class PythonEmitter:
         # Array/String properties
         if prop_name == 'length':
             return f'len({obj})'
+
+        # For local variables that might be dicts (not self, not
+        # module-level), use safe access pattern
+        if (obj not in ('self', 'math', 'Math', 'dict', 'list',
+                         'set', 'json', 'copy', 'functools',
+                         'datetime', 'date', 'Decimal')
+                and not obj.startswith('self.')
+                and not obj[0].isupper()):
+            # Could be a dict — use _ga (get-attribute) helper
+            return f'_ga({obj}, "{prop_name}")'
 
         return f'{obj}.{prop_name}'
 

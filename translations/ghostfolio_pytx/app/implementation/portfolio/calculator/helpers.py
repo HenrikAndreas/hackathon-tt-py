@@ -8,6 +8,12 @@ import math
 from datetime import datetime, timedelta, date
 from decimal import Decimal
 
+def _ga(obj, key, default=None):
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+
 # --- from portfolio.helper.ts ---
 def get_factor(activityType):
     factor = None
@@ -85,8 +91,8 @@ def decode_data_source(encodedDataSource):
     if (format == 'json'):
         content = JSON.stringify(content, None, '  ')
     file = Blob([content], {'type': contentType})
-    a.href = URL.create_object_url(file)
-    a.download = fileName
+
+
     a.click()
 
 def encode_data_source(aDataSource):
@@ -111,10 +117,10 @@ def get_asset_profile_identifier(dataSource, symbol):
     return f"{dataSource}-{symbol}"
 
 def get_background_color(aColorScheme):
-    return getCssVariable(('--dark-background' if ((aColorScheme == 'DARK')  or  window.match_media('(prefers-color-scheme: dark)').matches) else '--light-background'))
+    return getCssVariable(('--dark-background' if ((aColorScheme == 'DARK')  or  _ga(window.match_media('(prefers-color-scheme: dark)'), "matches")) else '--light-background'))
 
 def get_css_variable(aCssVariable):
-    return getComputedStyle(document.documentElement).get_property_value(aCssVariable)
+    return getComputedStyle(_ga(document, "documentElement")).get_property_value(aCssVariable)
 
 def get_currency_from_symbol(aSymbol=''):
     return aSymbol.replace(DEFAULT_CURRENCY, '')
@@ -169,11 +175,11 @@ def get_date_format_string(aLocale):
 
 def get_number_format_decimal(aLocale):
     formatObject = Intl.NumberFormat(aLocale).format_to_parts(9999.99)
-    return next((x for x in formatObject if (x.get('type') == 'decimal')), None).value
+    return _ga(next((x for x in formatObject if (x.get('type') == 'decimal')), None), "value")
 
 def get_number_format_group(aLocale=None):
     formatObject = Intl.NumberFormat(aLocale, {'useGrouping': True}).format_to_parts(9999.99)
-    return next((x for x in formatObject if (x.get('type') == 'group')), None).value
+    return _ga(next((x for x in formatObject if (x.get('type') == 'group')), None), "value")
 
 def get_start_of_utc_date(aDate):
     date = _parse_date(aDate)
@@ -186,7 +192,7 @@ def get_sum(aArray):
     return Decimal(str(0))
 
 def get_text_color(aColorScheme):
-    cssVariable = getCssVariable(('--light-primary-text' if ((aColorScheme == 'DARK')  or  window.match_media('(prefers-color-scheme: dark)').matches) else '--dark-primary-text'))
+    cssVariable = getCssVariable(('--light-primary-text' if ((aColorScheme == 'DARK')  or  _ga(window.match_media('(prefers-color-scheme: dark)'), "matches")) else '--dark-primary-text'))
     r, g, b = cssVariable.split(',')
     return f"{r}, {g}, {b}"
 
