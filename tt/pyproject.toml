@@ -23,5 +23,5 @@ dev = [
 [project.scripts]
 tt = "tt.cli:main"
 
-[tool.setuptools.packages]
-find = {}
+[tool.setuptools.packages.find]
+include = ["tt*", "codegen*"]
